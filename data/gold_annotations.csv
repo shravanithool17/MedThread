@@ -1,0 +1,61 @@
+note_id,sentence,entity_normalized,context,notes
+NOTE_001,"Patient presents with cough and fever.",cough,affirmed,Clear affirmed mention
+NOTE_001,"Patient presents with cough and fever.",fever,affirmed,Clear affirmed mention
+NOTE_001,"No sore throat noted.",sore_throat,negated,Negation via 'No X noted'
+NOTE_001,"Patient denies nausea.",nausea,negated,Negation via 'denies'
+NOTE_001,"Possible infection suspected.",infection,uncertain,Uncertainty via 'Possible X'
+NOTE_002,"Cough persists but fever has resolved.",cough,affirmed,Affirmed — 'persists'
+NOTE_002,"Cough persists but fever has resolved.",fever,resolved,Resolved — 'fever has resolved'
+NOTE_002,"No nausea.",nausea,negated,Negation via 'No X'
+NOTE_002,"Patient reports fatigue since last Monday.",fatigue,affirmed,Affirmed with temporal context
+NOTE_003,"No fever.",fever,negated,Negation via 'No X'
+NOTE_003,"Fatigue is better.",fatigue,affirmed,Still present but improving — affirmed (not resolved)
+NOTE_003,"No longer has shortness of breath.",shortness_of_breath,resolved,Resolution via 'no longer has'
+NOTE_004,"Patient complains of headache and dizziness.",headache,affirmed,Clear affirmed
+NOTE_004,"Patient complains of headache and dizziness.",dizziness,affirmed,Clear affirmed
+NOTE_004,"No fever.",fever,negated,Negation via 'No X'
+NOTE_004,"No chest pain.",chest_pain,negated,Negation via 'No X'
+NOTE_004,"Sore throat present.",sore_throat,affirmed,Clear affirmed
+NOTE_005,"Headache has resolved.",headache,resolved,Resolution via 'has resolved'
+NOTE_005,"Dizziness persists.",dizziness,affirmed,Clear affirmed
+NOTE_005,"Possible vertigo.",dizziness,uncertain,Uncertainty via 'Possible X'
+NOTE_005,"Denies cough.",cough,negated,Negation via 'Denies'
+NOTE_005,"Patient now reports chest pain started today.",chest_pain,affirmed,New onset — affirmed
+NOTE_006,"Dizziness subsided.",dizziness,resolved,Resolution via 'subsided'
+NOTE_006,"No chest pain reported.",chest_pain,negated,Negation via 'No X reported'
+NOTE_006,"Sore throat cleared.",sore_throat,resolved,Resolution via 'cleared'
+NOTE_006,"No rash.",rash,negated,Negation
+NOTE_007,"Patient has fever and rash on arms.",fever,affirmed,Clear affirmed
+NOTE_007,"Patient has fever and rash on arms.",rash,affirmed,Clear affirmed
+NOTE_007,"Denies cough.",cough,negated,Negation via 'Denies'
+NOTE_007,"No shortness of breath.",shortness_of_breath,negated,Negation
+NOTE_007,"Fatigue present.",fatigue,affirmed,Clear affirmed
+NOTE_008,"Fever present again.",fever,affirmed,Clear affirmed
+NOTE_008,"Rash has resolved.",rash,resolved,Resolution via 'has resolved'
+NOTE_008,"No fatigue.",fatigue,negated,Negation
+NOTE_008,"Patient may have infection.",infection,uncertain,Uncertainty via 'may have'
+NOTE_009,"No fever.",fever,negated,Negation
+NOTE_009,"No rash.",rash,negated,Negation
+NOTE_009,"Fatigue has returned.",fatigue,affirmed,Affirmed — returned
+NOTE_009,"No cough.",cough,negated,Negation
+NOTE_009,"No nausea.",nausea,negated,Negation
+NOTE_010,"Patient with shortness of breath and chest pain.",shortness_of_breath,affirmed,Clear affirmed
+NOTE_010,"Patient with shortness of breath and chest pain.",chest_pain,affirmed,Clear affirmed
+NOTE_010,"Possible pneumonia.",infection,uncertain,Uncertainty via 'Possible'
+NOTE_010,"No fever.",fever,negated,Negation
+NOTE_010,"No cough.",cough,negated,Negation
+NOTE_011,"Shortness of breath improved.",shortness_of_breath,affirmed,Still present but improving
+NOTE_011,"Chest pain present.",chest_pain,affirmed,Clear affirmed
+NOTE_011,"No fever.",fever,negated,Negation
+NOTE_012,"Chest pain has resolved.",chest_pain,resolved,Resolution
+NOTE_012,"No shortness of breath.",shortness_of_breath,negated,Negation
+NOTE_012,"Patient reports headache started two days ago.",headache,affirmed,Affirmed with temporal
+NOTE_013,"Patient denies all symptoms.",cough,negated,Wholesale denial — all symptoms negated
+NOTE_013,"No fever no cough no nausea no headache.",fever,negated,Negation
+NOTE_014,"Patient presents with sudden onset fever and cough.",fever,affirmed,Affirmed
+NOTE_014,"Patient presents with sudden onset fever and cough.",cough,affirmed,Affirmed
+NOTE_014,"Denies rash.",rash,negated,Negation
+NOTE_014,"No chest pain.",chest_pain,negated,Negation
+NOTE_015,"Fever and cough persist.",fever,affirmed,Affirmed — persists
+NOTE_015,"Fever and cough persist.",cough,affirmed,Affirmed — persists
+NOTE_015,"Patient also reports nausea started yesterday.",nausea,affirmed,Affirmed with temporal

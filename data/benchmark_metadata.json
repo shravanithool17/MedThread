@@ -1,0 +1,29 @@
+{
+  "benchmark_id": "medthread-synthetic-context-v1",
+  "schema_version": "1.0.0",
+  "benchmark_version": "0.1.0",
+  "annotation_status": "author_annotated_not_independently_reviewed",
+  "provenance": "Project-authored synthetic notes and context annotations. No real patient records are included. Independent clinical adjudication is not documented.",
+  "note_count": 15,
+  "patient_group_count": 5,
+  "context_annotation_count": 60,
+  "entity_span_offsets_present": false,
+  "entity_annotation_coverage": "Partial positive/context examples; not exhaustive over all target mentions or all note text.",
+  "context_labels": [
+    "affirmed",
+    "negated",
+    "uncertain",
+    "resolved",
+    "unclear"
+  ],
+  "temporal_gold_labels_present": false,
+  "longitudinal_gold_labels_present": false,
+  "split_method": "No train/validation/test split. The rule-based pipeline has no fitted model; the complete bundled synthetic corpus is used only for descriptive development evaluation.",
+  "leakage_note": "No held-out performance estimate is claimed. Patient-group splitting is required before any future model fitting or holdout evaluation.",
+  "limitations": [
+    "The annotation set is small and not independently reviewed.",
+    "Entity annotations are not exhaustive, so extraction precision and F1 cannot be computed.",
+    "Temporal and longitudinal metrics are unavailable because corresponding gold labels are absent.",
+    "Synthetic results do not establish clinical validity."
+  ]
+}

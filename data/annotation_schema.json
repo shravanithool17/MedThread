@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://medthread.local/schemas/context-annotation-v1.json",
+  "title": "MedThread context annotation row",
+  "description": "Schema for the existing positive/context example CSV. This schema does not declare corpus-wide exhaustive entity coverage.",
+  "type": "object",
+  "required": [
+    "note_id",
+    "sentence",
+    "entity_normalized",
+    "context"
+  ],
+  "properties": {
+    "note_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Unique source note identifier; patient identity is resolved from the synthetic notes manifest."
+    },
+    "sentence": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Source sentence or the smallest documented evidence span used for this label."
+    },
+    "entity_normalized": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Canonical target concept from the configured lexicon."
+    },
+    "context": {
+      "enum": [
+        "affirmed",
+        "negated",
+        "uncertain",
+        "resolved",
+        "unclear"
+      ]
+    },
+    "notes": {
+      "type": "string",
+      "description": "Annotation rationale. Current benchmark rationale is present in this column."
+    }
+  },
+  "additionalProperties": false,
+  "future_exhaustive_annotation_fields": {
+    "annotation_status": [
+      "draft",
+      "reviewed",
+      "adjudicated"
+    ],
+    "entity_start": "Integer character offset in the original note; inclusive.",
+    "entity_end": "Integer character offset in the original note; exclusive.",
+    "temporal_label": [
+      "current",
+      "historical",
+      "onset",
+      "resolved",
+      "ambiguous",
+      "not_applicable"
+    ],
+    "normalized_event_date": "ISO-8601 date or null.",
+    "longitudinal_case_label": [
+      "potential_contradiction",
+      "temporal_change",
+      "explicit_resolution",
+      "missing_documentation",
+      "uncertain",
+      "not_comparable"
+    ],
+    "rationale": "Annotator explanation; independent review and adjudication metadata should be recorded."
+  }
+}

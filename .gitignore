@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+.env
+*.log
+.streamlit/secrets.toml
+frontend/node_modules/
+*.tsbuildinfo
+.claude/
+streamlit_err.txt
+streamlit_out.txt
