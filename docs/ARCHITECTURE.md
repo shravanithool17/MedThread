@@ -28,10 +28,17 @@ MedThread/
 │   ├── gold_annotations.csv        60 partial context examples
 │   ├── benchmark_metadata.json     Provenance, coverage, status, limitations
 │   └── annotation_schema.json      Current row schema
-├── backend/                         FastAPI endpoints, in-memory app state, response models
+├── backend/
+│   ├── main.py                      FastAPI routes and pipeline integration
+│   ├── state.py                     In-memory derived-results cache
+│   ├── storage.py                   SQLite source-note and review persistence
+│   └── models.py                    Pydantic response schemas
 ├── frontend/                        React/Vite/TypeScript user interface
 └── tests/                          pytest test files
 ```
+
+The React/FastAPI application is the primary workflow documented here;
+`app.py` and `pages/` are retained as a separate legacy Streamlit entry point.
 
 ## Data Flow
 
@@ -56,10 +63,17 @@ temporal.py ──────────────────── extract
     ▼
 longitudinal_analysis.py ─────── group by (patient, entity), apply comparison rules
     │
+    ├── SQLite transaction ─ persists source notes after successful processing
+    │
     ▼
 text_mining.py ───────────────── aggregate stats for dashboard
 evaluation.py ────────────────── align examples, score matched contexts, audit unscorable rows
 ```
+
+On FastAPI startup, source notes are restored from SQLite and the pipeline is
+recomputed. Derived DataFrames remain process-local. Review decisions/rationales
+are persisted per browser-session ID and review key; an append-only event table
+records changes. Dataset replacement/reset clears prior decisions.
 
 ## Key Algorithms
 
@@ -128,7 +142,8 @@ not contradiction (Test Case 6: "No fever Monday; fever started Wednesday").
 | spaCy as optional | Avoids hard dependency; regex fallback is production-viable |
 | Temporal comparability check | Prevents temporal changes from being falsely flagged as contradictions |
 | `not_documented` ≠ `resolved` | Absence of mention is not evidence of clinical absence |
-| Session-only storage | No permanent storage of clinical text |
+| Local SQLite persistence | Restart-safe active source notes and review annotations; single-process prototype only |
+| Code-point source offsets | Exact original-text spans; converted to UTF-16 indices only when rendered in React |
 
 ## Extension Points
 
@@ -139,5 +154,5 @@ not contradiction (Test Case 6: "No fever Monday; fever started Wednesday").
 - **Evaluation constraints**: current gold examples are partial and not independently reviewed;
   unmatched predictions are unscorable, not false positives. Entity precision/F1, temporal scores,
   and longitudinal scores are unavailable.
-- **Persistence**: Add SQLite via `storage.py` if multi-session persistence is needed
+- **Persistence**: SQLite is implemented for this local API; managed storage and security controls are required for multi-user/production use
 - **PubMed integration**: Optional module; query PubMed API and display metadata alongside notes

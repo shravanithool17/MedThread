@@ -12,7 +12,8 @@
 MedThread/
 ├── backend/          ← FastAPI REST API (Python)
 │   ├── main.py       ← REST endpoints; starts the real NLP pipeline on loaded notes
-│   ├── state.py      ← In-memory corpus and per-browser-session review decisions
+│   ├── state.py      ← In-memory NLP cache and SQLite-backed review state
+│   ├── storage.py    ← Local SQLite persistence for active notes and reviews
 │   └── models.py     ← Pydantic response schemas
 ├── src/medthread/    ← Shared NLP pipeline and evaluation logic
 │   ├── config.py     ← Symptom lexicon + context cues
@@ -37,7 +38,7 @@ MedThread/
     └── test_*.py               ← NLP, API, and evaluation regression tests
 ```
 
-The React application calls the FastAPI backend; the backend calls the shared Python NLP modules. The original Streamlit application remains available as a separate entry point. The backend corpus and reviewer states are held in process memory, so this is a local prototype, not a multi-user or production clinical system.
+The React application calls the FastAPI backend; the backend calls the shared Python NLP modules. The original Streamlit application remains available as a separate entry point. The FastAPI application persists active source notes and reviewer decisions in a local SQLite database, then recomputes derived NLP results at startup. In-memory DataFrames are only a process cache. This is a local, single-process prototype, not a multi-user or production clinical system.
 
 ---
 
@@ -52,10 +53,13 @@ py -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r backend\requirements.txt
 
+# Optional: choose a different local database file before starting the API.
+# The default is .medthread\medthread.sqlite3 under the repository root.
+# $env:MEDTHREAD_DB_PATH = "C:\medthread-data\medthread.sqlite3"
 python -m uvicorn backend.main:app --host 127.0.0.1 --port 8001 --reload
 ```
 
-The backend runs the actual NLP pipeline on the bundled synthetic dataset at startup. Visit `http://127.0.0.1:8001/docs` for the interactive API explorer. Binding to `127.0.0.1` keeps the server local and avoids common Windows socket permission errors.
+On the first start with a fresh database, the backend seeds and processes the bundled synthetic dataset. Later starts restore the last active notes from SQLite and recompute NLP results. Visit `http://127.0.0.1:8001/docs` for the interactive API explorer. Binding to `127.0.0.1` keeps the server local and avoids common Windows socket permission errors.
 
 ### 2. Frontend (React + Vite)
 
@@ -103,7 +107,7 @@ npm run build
 | Clinical Notes | `/import` | Preview/import CSV or JSON, manually enter a note, filter loaded notes |
 | Patient Journey | `/journey` | Chronological original notes, mention context/status, source links |
 | Note Explorer | `/notes` | Original note text and clickable entity evidence |
-| Consistency | `/consistency` | Dated source evidence, triggering rule, per-browser review decisions |
+| Consistency | `/consistency` | Dated source evidence, triggering rule, persisted session decisions/rationale |
 | Text Intelligence | `/intelligence` | Filterable concept frequencies/context, source-linked note co-occurrence, CSV export |
 | Evaluation | `/evaluation` | Source-aligned context metrics, coverage-limited entity recall, exclusions, error evidence |
 
@@ -115,11 +119,20 @@ The bundled `data/gold_annotations.csv` contains 60 project-authored context exa
 
 See [docs/ANNOTATION_GUIDE.md](docs/ANNOTATION_GUIDE.md), [docs/REPRODUCIBILITY.md](docs/REPRODUCIBILITY.md), and [docs/RESULTS_TEMPLATE.md](docs/RESULTS_TEMPLATE.md) before reporting results. Do not copy illustrative or example values as measured results.
 
-Latest observed validation (2026-10-27): `python -m pytest tests -q` — 141 passed; `npm run build` — succeeded. These are software validation results, not clinical performance results.
+Latest observed validation (2026-10-28): `python -m pytest tests -q` — 161 passed; `Set-Location frontend; npm test` — 4 passed; `npm run build` — succeeded. These are software validation results, not clinical performance results.
 
 ### Importing notes
 
-Open **Import Notes** from the navigation. Upload a CSV with the header `patient_id,note_id,visit_date,text` or a JSON array with those same fields. Dates must be valid; empty required values, duplicate IDs, malformed files, and rows with missing values are reported before import. The CSV/JSON preview displays valid and invalid row counts, and only the valid rows are imported. File imports replace the active in-memory notes; manual entry appends one note. Use **Restore synthetic demo** to reload the bundled demo dataset at any time. Manual input and imported files are validated again by FastAPI, and every successful import runs the shared NLP pipeline. All active data is in memory only and is lost when the backend process stops.
+Open **Import Notes** from the navigation. Upload a CSV with the header `patient_id,note_id,visit_date,text` or a JSON array with those same fields. Dates must be valid; empty required values, duplicate IDs, malformed files, and rows with missing values are reported before import. The CSV/JSON preview displays valid and invalid row counts, and only the valid rows are imported. File imports replace the active dataset; manual entry appends a note. FastAPI validates inputs and runs the shared NLP pipeline before activating a dataset. Notes are persisted in local SQLite; a fresh database is seeded with the synthetic demo, while later restarts restore the last active dataset. **Restore synthetic demo** replaces that dataset. **Reset** persists an empty dataset and does not reseed demo on restart.
+
+### Local persistence, backup, and privacy
+
+- The default SQLite file is `.medthread\medthread.sqlite3` (ignored by Git). Set `MEDTHREAD_DB_PATH` in the backend process environment to use another file.
+- Source note text is stored in plaintext SQLite on the local machine. This prototype does not encrypt data or provide clinical security controls; do not upload real patient or protected health information.
+- Reviewer decisions are scoped by the browser-session identifier and review key; rationale, latest decision, UTC timestamp, and append-only decision events are persisted. They are annotations, not clinical record updates.
+- Replacing the dataset (including restoring demo) clears saved review decisions. Restarting FastAPI does not. Reset writes an empty dataset and clears decisions; it is an application-level deletion, not a secure-erasure guarantee.
+- To back up, stop the backend and copy the configured SQLite database file to a protected location. Treat the backup as containing the full source note text.
+- The legacy Streamlit entry point is retained; the SQLite lifecycle described here is implemented by the FastAPI application.
 
 ---
 
@@ -141,7 +154,8 @@ Open **Import Notes** from the navigation. Upload a CSV with the header `patient
 | GET | `/api/comparison` | Longitudinal comparison results |
 | GET | `/api/timeline/{patient_id}` | Patient visit timeline |
 | GET | `/api/review` | Review queue (inconsistencies + unclear) |
-| PUT | `/api/review/{key}` | Update review state |
+| PUT | `/api/review/{key}` | Save review state and optional rationale; responses include timestamp and decision history |
+| POST | `/api/reset` | Persist an empty active dataset and clear reviewer decisions |
 | GET | `/api/export/mentions.csv` | Export extracted mentions |
 | GET | `/api/export/review.csv` | Export review flags and session decisions |
 | POST | `/api/upload` | Upload CSV/JSON notes file and run the NLP pipeline |

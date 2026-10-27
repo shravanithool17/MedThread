@@ -26,9 +26,38 @@ The application does not diagnose, recommend treatment, establish patient status
 
 The React/Vite frontend calls FastAPI endpoints. FastAPI validates imports and invokes the shared modules under `src/medthread/`. The pipeline sequence is preprocessing and sentence splitting, lexicon extraction, context rules, temporal phrase extraction, then longitudinal grouping by `(patient_id, entity_normalized)`. Patient Journey, consistency review, concept exploration, exports, and Evaluation Studio display actual active-dataset API results. Note text is rendered as React text rather than injected markup.
 
+The FastAPI application persists the active source notes and dataset metadata in
+SQLite at `.medthread/medthread.sqlite3` by default; `MEDTHREAD_DB_PATH` may
+select another local database file. On restart, the application restores the
+notes and recomputes NLP outputs rather than persisting stale derived results.
+Reviewer decisions, optional rationale, UTC timestamps, and decision-event
+history are also stored per browser-session identifier and review key. Replacing
+or resetting the dataset clears review decisions. The legacy Streamlit entry
+point remains available and retains its separate session-state behavior.
+SQLite contains plaintext source note text. The prototype does not encrypt data,
+provide multi-user database guarantees, or offer clinical security controls.
+Do not upload real patient or protected health information.
+
 Extraction currently uses configured aliases with word-boundary regex matching, or spaCy PhraseMatcher when available. Overlapping matches are filtered longest-first. Context rules are clause-scoped and return one of `affirmed`, `negated`, `uncertain`, `resolved`, or `unclear`. Improvement language is not treated as explicit resolution; explicit “no longer” language is. Temporal parsing is best effort. Longitudinal rules never compare different patient IDs. Undocumented symptoms are not treated as absent or resolved.
 
+Mention spans are exposed as zero-based, half-open Unicode code-point offsets
+into the original note. Backend validation confirms the exact source substring;
+the React text renderer converts these offsets to JavaScript UTF-16 indices for
+highlighting. If a span cannot be verified, it is not highlighted or linked as
+an exact span.
+
 These are deterministic rules, not a trained model. Their output is evidence for review, not verified medical truth.
+
+Consistency records keep the automated rule status and reviewer conclusion as
+separate fields. The evidence view presents the rule trace and source notes,
+dates, exact source sentences, validated mention spans, contexts, and
+normalized event-date comparison when available. It reports elapsed time only
+when both comparable normalized event dates exist; note visit dates are not
+used as substitutes. A date-less or unparseable event time is shown as
+unavailable, not inferred. Review rationale and history are scoped by the
+existing browser-session identifier and stored in SQLite; another browser
+session does not inherit those decisions. These annotations do not modify
+clinical records.
 
 ## 3. Dataset and annotation protocol
 
@@ -37,6 +66,11 @@ The bundled source file contains 15 synthetic notes grouped under five synthetic
 The annotation status is **author-annotated, not independently reviewed**. The labels are not exhaustive over the corpus and do not include entity offsets, complete negative/none-of-target spans, temporal gold labels, or longitudinal case labels. A current row is aligned by note ID, canonical entity, and punctuation-insensitive sentence tokens. Gold examples with an exact aligned prediction are used for context classification. Unmatched gold examples are tracked separately; prediction examples without matching gold are unscorable, not false positives. Source rows that do not match an active source note are listed as exclusions.
 
 No values in this report should be interpreted as clinical performance or independently adjudicated gold quality.
+
+Duplicate annotation judgments are checked during loading. Repeated equivalent
+rows with the same label are deduplicated and reported as a warning; conflicting
+labels for the same note/entity/source sentence are excluded and reported,
+rather than selected arbitrarily.
 
 ## 4. Evaluation methodology
 
@@ -48,6 +82,16 @@ For matched mentions only, the five context labels use a fixed order: affirmed, 
 
 Eligible annotated-example recall is matched gold examples divided by eligible gold examples (matched plus actual missed extraction). Precision and F1 are deliberately null: the annotations are not exhaustive, so unmatched model outputs cannot be treated as false positives. Predictions without a gold match are reported with reason codes such as `no_gold_for_note_entity` or `sentence_alignment_mismatch`.
 
+Exact-span extraction metrics are a separate measure and require valid
+zero-based half-open source-text offsets for every gold occurrence plus an
+explicitly exhaustive set of source note IDs. Matching uses note ID, exact
+start/end offsets, and canonical concept. Repeated mentions are counted by
+their distinct spans. Invalid or conflicting offsets and missing notes are
+reported as exclusions or make the span metrics unavailable; no predicted
+offset is used to repair gold. The active metadata declares
+`entity_exhaustive_note_ids: []`, and the annotation CSV contains no entity
+offsets, so exact-span precision/recall/F1 remain unavailable.
+
 ### Temporal and longitudinal tasks
 
 No temporal or longitudinal gold labels are present. Those metrics are not available. Rule traces and temporal outputs in the UI are not measured evaluation results.
@@ -58,16 +102,17 @@ There is no training, validation, or test split because the system does not fit 
 
 ## 5. Observed results
 
-Observed from `GET /api/evaluation/demo` on 2026-10-27 using benchmark `medthread-synthetic-context-v1` v0.1.0:
+Recomputed from `GET /api/evaluation/demo` on 2026-10-28 using benchmark `medthread-synthetic-context-v1` v0.1.0:
 
-- 60 context annotation rows; 59 exact/punctuation-normalized source alignments, no eligible extraction misses, and one unscorable sentence alignment.
+- 60 raw context annotation rows; one is excluded because `NOTE_013` labels `cough` in “Patient denies all symptoms.” without a cough surface form. The other 59 eligible examples align; there are no extraction misses or context-confusion errors. The source annotation remains unchanged.
 - 59 context-classification samples. Computed accuracy was 1.000; macro precision/recall/F1 were 0.800/0.800/0.800 using all five fixed labels (the `unclear` class has zero support); weighted precision/recall/F1 were 1.000/1.000/1.000.
 - Per-class results (precision / recall / F1 / support) were: affirmed 1.000 / 1.000 / 1.000 / 25; negated 1.000 / 1.000 / 1.000 / 23; uncertain 1.000 / 1.000 / 1.000 / 4; resolved 1.000 / 1.000 / 1.000 / 7; unclear 0.000 / 0.000 / 0.000 / 0.
 - The fixed five-label macro average is 0.800 because `unclear` has no support and zero-division is set to zero; its per-class scores contribute zero to the unweighted mean. Weighted F1 is 1.000 because each of the 59 supported examples is in one of the four perfectly scored classes, while the zero-support class has zero weight. This difference is a label-support/evaluation-policy effect, not evidence that the benchmark is representative.
 - The confusion matrix (rows = gold, columns = predicted; order: affirmed, negated, uncertain, resolved, unclear) was `[[25,0,0,0,0],[0,23,0,0,0],[0,0,4,0,0],[0,0,0,7,0],[0,0,0,0,0]]`. The implementation uses zero for undefined class precision/recall/F1.
 - Annotated-example entity recall was 1.000 over 59 eligible examples. Entity precision and F1 were not computed because annotation coverage is partial.
-- Eight predicted mentions had no exact gold match and were reported unscorable (seven without a note/entity gold row; one sentence-alignment mismatch), not false positives.
+- Eight predicted mentions had no matching note/entity gold row and were reported unscorable, not false positives. There were no sentence-alignment mismatches or ambiguous repeated-mention alignments among these predictions.
 - No scored context errors were returned. Temporal and longitudinal metrics were unavailable because there are no gold labels for those tasks.
+- Exact-span entity metrics were unavailable: the benchmark has no entity offsets and declares no exhaustively annotated note IDs. The evaluator does not convert the eight unmatched predictions into false positives.
 
 These are descriptive results on a small synthetic development set with author annotations that are not independently reviewed. They are not held-out estimates, do not measure extraction precision, and do not establish clinical validity. A current run may be captured in [RESULTS_TEMPLATE.md](RESULTS_TEMPLATE.md).
 
@@ -84,11 +129,12 @@ Regression cases cover negation scope, separate contexts in one sentence, uncert
 - Synthetic results do not establish clinical validity or real-world performance.
 - The synthetic gold set is small, partial, project-authored, and not independently reviewed.
 - Entity extraction precision/F1, temporal scores, and longitudinal scores are unavailable.
+- Exact-span entity precision/recall/F1 also require a nonempty, complete exhaustive-note scope with valid gold offsets; that requirement is not met by this benchmark.
 - There is no patient-group held-out split or ML baseline.
 - Rule-based extraction is limited by the configured lexicon; unseen aliases can be missed.
 - Context scope and date normalization are heuristic and can fail on complex prose.
 - “Unclear” and temporal ambiguity require human interpretation.
-- Data and review decisions are held in process/browser session memory; this prototype provides no clinical security guarantees.
+- The FastAPI local SQLite database is unencrypted and single-process; this prototype provides no clinical security guarantees. The legacy Streamlit entry point uses separate session state.
 - Only synthetic or authorized, properly de-identified text should be used in a controlled local environment.
 
 ## 8. Conclusion and future work

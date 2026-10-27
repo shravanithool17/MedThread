@@ -9,6 +9,7 @@
   "context_annotation_count": 60,
   "entity_span_offsets_present": false,
   "entity_annotation_coverage": "Partial positive/context examples; not exhaustive over all target mentions or all note text.",
+  "entity_exhaustive_note_ids": [],
   "context_labels": [
     "affirmed",
     "negated",

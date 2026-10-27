@@ -48,10 +48,15 @@ class MentionOut(BaseModel):
     reason: Optional[str]
     time_expression: Optional[str]
     normalized_event_date: Optional[str]
+    entity: Optional[str] = None
     char_start: Optional[int]
     char_end: Optional[int]
+    offset_unit: Optional[str] = None
+    offset_convention: Optional[str] = None
+    offset_validated: bool = False
     extraction_method: Optional[str] = None
     journey_status: Optional[str] = None
+    sentence_index: Optional[int] = None
 
 
 class EvidenceItem(BaseModel):
@@ -62,9 +67,17 @@ class EvidenceItem(BaseModel):
     reason: Optional[str] = None
     time_expression: Optional[str] = None
     normalized_event_date: Optional[str] = None
+    entity: Optional[str] = None
+    entity_normalized: Optional[str] = None
+    char_start: Optional[int] = None
+    char_end: Optional[int] = None
+    offset_unit: Optional[str] = None
+    offset_convention: Optional[str] = None
+    offset_validated: bool = False
 
 
 class ComparisonOut(BaseModel):
+    flag_id: str
     patient_id: str
     entity: str
     status: str
@@ -74,7 +87,11 @@ class ComparisonOut(BaseModel):
     evidence_sentences: str
     review_state: str
     review_key: str
+    review_rationale: str = ""
+    review_updated_at: Optional[str] = None
+    review_history: list[dict[str, Any]] = Field(default_factory=list)
     evidence: list[EvidenceItem] = Field(default_factory=list)
+    temporal_comparisons: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class TimelineVisit(BaseModel):
@@ -92,11 +109,13 @@ class TimelineResponse(BaseModel):
 
 class ReviewUpdateRequest(BaseModel):
     state: str
+    rationale: str = Field(default="", max_length=4000)
 
 
 class EvaluationResponse(BaseModel):
     benchmark: dict[str, Any] = Field(default_factory=dict)
     entity_metrics: dict[str, Any] = Field(default_factory=dict)
+    entity_span_metrics: dict[str, Any] = Field(default_factory=dict)
     overall: dict[str, Any]
     per_class: list[dict[str, Any]]
     confusion_matrix: Optional[list[list[int]]]

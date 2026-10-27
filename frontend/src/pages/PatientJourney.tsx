@@ -17,13 +17,15 @@ function VisitNode({
   index,
   selectedMention,
   onSelectMention,
+  initialOpen = false,
 }: {
   visit: TimelineVisit
   index: number
   selectedMention: Mention | null
   onSelectMention: (mention: Mention) => void
+  initialOpen?: boolean
 }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(initialOpen)
   const contextCounts = visit.mentions.reduce<Record<string, number>>((acc, m) => {
     acc[m.context] = (acc[m.context] ?? 0) + 1
     return acc
@@ -31,6 +33,7 @@ function VisitNode({
 
   return (
     <motion.div
+      id={`visit-${encodeURIComponent(visit.note_id)}`}
       initial={{ opacity: 0, x: -12 }}
       animate={{ opacity: 1, x: 0 }}
       transition={{ delay: index * 0.07 }}
@@ -103,14 +106,17 @@ function VisitNode({
                     <p className="section-label mb-2">Documented symptom events</p>
                     <div className="flex flex-col gap-2">
                       {visit.mentions.map((m, i) => (
-                        <button
+                      <div
                           key={i}
+                        className={`w-full rounded-md border p-3 text-left text-sm ${
+                          selectedMention === m ? 'border-teal-300 bg-white' : 'border-transparent hover:bg-white'
+                        }`}
+                      >
+                        <button
                           type="button"
                           onClick={() => onSelectMention(m)}
                           aria-pressed={selectedMention === m}
-                          className={`w-full rounded-md border p-3 text-left text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-teal-700 ${
-                            selectedMention === m ? 'border-teal-300 bg-white' : 'border-transparent hover:bg-white'
-                          }`}
+                          className="w-full text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-teal-700"
                         >
                           <span className="flex flex-wrap items-center gap-2">
                             <span className="font-semibold capitalize text-gray-800">{m.entity_normalized}</span>
@@ -127,6 +133,13 @@ function VisitNode({
                             {m.normalized_event_date ? ` · Interpreted date: ${m.normalized_event_date}` : ''}
                           </span>
                         </button>
+                        <Link
+                          className="mt-2 inline-flex text-xs font-semibold text-teal-800 underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-teal-700"
+                          to={mentionNoteUrl(m)}
+                        >
+                          {m.offset_validated ? 'Open exact source span' : 'Open source note'}
+                        </Link>
+                      </div>
                       ))}
                     </div>
                   </div>
@@ -151,7 +164,7 @@ function VisitNode({
                     </p>
                     <Link
                       className="mt-3 inline-flex text-xs font-semibold text-teal-800 underline"
-                      to={`/notes?note_id=${encodeURIComponent(visit.note_id)}`}
+                      to={mentionNoteUrl(selectedMention)}
                     >
                       Open note in NLP inspector
                     </Link>
@@ -164,6 +177,20 @@ function VisitNode({
       </div>
     </motion.div>
   )
+}
+
+function mentionNoteUrl(mention: Mention): string {
+  const params = new URLSearchParams({
+    note_id: mention.note_id,
+    patient_id: mention.patient_id,
+    timeline_note_id: mention.note_id,
+    from_timeline: '1',
+  })
+  if (mention.offset_validated && mention.char_start !== null && mention.char_end !== null) {
+    params.set('mention_start', String(mention.char_start))
+    params.set('mention_end', String(mention.char_end))
+  }
+  return `/notes?${params.toString()}`
 }
 
 export default function PatientJourney() {
@@ -186,6 +213,15 @@ export default function PatientJourney() {
     }
   }, [patients.data, selectedPatient])
   useEffect(() => setSelectedMention(null), [selectedPatient])
+  useEffect(() => {
+    const noteId = new URLSearchParams(window.location.search).get('note_id')
+    if (noteId && timeline.data?.visits.some(visit => visit.note_id === noteId)) {
+      document.getElementById(`visit-${encodeURIComponent(noteId)}`)?.scrollIntoView({
+        block: 'center',
+        behavior: 'smooth',
+      })
+    }
+  }, [timeline.data])
 
   return (
     <PageWrapper>
@@ -245,6 +281,7 @@ export default function PatientJourney() {
               index={i}
               selectedMention={selectedMention}
               onSelectMention={setSelectedMention}
+              initialOpen={new URLSearchParams(window.location.search).get('note_id') === visit.note_id}
             />
           ))}
           {timeline.data.visits.length === 0 && (

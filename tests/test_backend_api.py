@@ -1,6 +1,7 @@
 """Integration tests for the MedThread FastAPI backend."""
 import sys
 import os
+from datetime import date
 
 import pytest
 from fastapi.testclient import TestClient
@@ -9,6 +10,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from backend.main import _activate_notes, _csv_response, app
+from backend.state import state
+from backend.storage import SQLiteStore
 from medthread.schemas import Note
 
 
@@ -268,6 +271,155 @@ def test_review_evidence_has_dates_context_and_source_sentences(client):
         assert evidence["context"] in {"affirmed", "negated", "uncertain", "resolved", "unclear"}
 
 
+def test_review_temporal_pairs_report_only_known_event_date_differences(client):
+    rows = [
+        {
+            "patient_id": "P_TEMPORAL_EVIDENCE",
+            "note_id": "TEMPORAL_MON",
+            "visit_date": "2024-01-08",
+            "text": "No fever Monday.",
+        },
+        {
+            "patient_id": "P_TEMPORAL_EVIDENCE",
+            "note_id": "TEMPORAL_WED",
+            "visit_date": "2024-01-10",
+            "text": "Fever started Wednesday.",
+        },
+        {
+            "patient_id": "P_TEMPORAL_UNKNOWN",
+            "note_id": "UNKNOWN_A",
+            "visit_date": "2024-01-08",
+            "text": "Patient has cough.",
+        },
+        {
+            "patient_id": "P_TEMPORAL_UNKNOWN",
+            "note_id": "UNKNOWN_B",
+            "visit_date": "2024-01-10",
+            "text": "Patient denies cough.",
+        },
+    ]
+    try:
+        imported = client.post("/api/notes/import", json={"mode": "replace", "notes": rows})
+        assert imported.status_code == 200, imported.text
+        flags = client.get("/api/review?show_all=true").json()
+
+        temporal = next(item for item in flags if item["patient_id"] == "P_TEMPORAL_EVIDENCE")
+        pair = next(pair for pair in temporal["temporal_comparisons"]
+                    if pair["first_note_id"] != pair["second_note_id"])
+        assert pair["event_date_comparison"] == "different_event_dates"
+        assert pair["days_between_event_dates"] == 2
+        assert pair["first_visit_date"] and pair["second_visit_date"]
+
+        unknown = next(item for item in flags if item["patient_id"] == "P_TEMPORAL_UNKNOWN")
+        unknown_pair = unknown["temporal_comparisons"][0]
+        assert unknown_pair["first_visit_date"] == "2024-01-08"
+        assert unknown_pair["second_visit_date"] == "2024-01-10"
+        assert unknown_pair["event_date_comparison"] == "event_date_unavailable"
+        assert unknown_pair["days_between_event_dates"] is None
+
+        _activate_notes([
+            Note(
+                patient_id="P_UNDATED_EVENTS",
+                note_id="UNDATED_A",
+                visit_date=None,
+                text="Patient has cough.",
+            ),
+            Note(
+                patient_id="P_UNDATED_EVENTS",
+                note_id="UNDATED_B",
+                visit_date=None,
+                text="Patient denies cough.",
+            ),
+        ], "imported")
+        undated_flag = next(
+            item for item in client.get("/api/review?show_all=true").json()
+            if item["patient_id"] == "P_UNDATED_EVENTS"
+        )
+        undated_pair = undated_flag["temporal_comparisons"][0]
+        assert undated_pair["first_visit_date"] is None
+        assert undated_pair["second_visit_date"] is None
+        assert undated_pair["days_between_event_dates"] is None
+    finally:
+        client.post("/api/demo")
+
+
+def test_review_temporal_pairs_do_not_cross_patient_boundaries(client):
+    rows = [
+        {
+            "patient_id": "P_ONLY_AFFIRMED",
+            "note_id": "PATIENT_A",
+            "visit_date": "2024-01-01",
+            "text": "Patient has fever.",
+        },
+        {
+            "patient_id": "P_ONLY_NEGATED",
+            "note_id": "PATIENT_B",
+            "visit_date": "2024-01-01",
+            "text": "Patient denies fever.",
+        },
+    ]
+    try:
+        imported = client.post("/api/notes/import", json={"mode": "replace", "notes": rows})
+        assert imported.status_code == 200
+        flags = client.get("/api/review?show_all=true").json()
+        fever_flags = [item for item in flags if item["entity"] == "fever"]
+        assert {item["patient_id"] for item in fever_flags} == {
+            "P_ONLY_AFFIRMED", "P_ONLY_NEGATED"
+        }
+        assert all(item["status"] != "possible_inconsistency" for item in fever_flags)
+        assert all(
+            {pair["first_note_id"], pair["second_note_id"]} != {"PATIENT_A", "PATIENT_B"}
+            for item in fever_flags
+            for pair in item["temporal_comparisons"]
+        )
+    finally:
+        client.post("/api/demo")
+
+
+def test_review_evidence_keeps_explicit_resolution_and_silence_distinct(client):
+    rows = [
+        {
+            "patient_id": "P_RESOLUTION_EVIDENCE",
+            "note_id": "RESOLUTION_A",
+            "visit_date": "2024-02-01",
+            "text": "Patient reports cough.",
+        },
+        {
+            "patient_id": "P_RESOLUTION_EVIDENCE",
+            "note_id": "RESOLUTION_B",
+            "visit_date": "2024-02-03",
+            "text": "Cough has resolved.",
+        },
+        {
+            "patient_id": "P_SILENCE_EVIDENCE",
+            "note_id": "SILENCE_A",
+            "visit_date": "2024-02-01",
+            "text": "Patient reports nausea.",
+        },
+        {
+            "patient_id": "P_SILENCE_EVIDENCE",
+            "note_id": "SILENCE_B",
+            "visit_date": "2024-02-03",
+            "text": "Routine follow-up.",
+        },
+    ]
+    try:
+        imported = client.post("/api/notes/import", json={"mode": "replace", "notes": rows})
+        assert imported.status_code == 200
+        flags = client.get("/api/review?show_all=true").json()
+        resolution = next(item for item in flags if item["patient_id"] == "P_RESOLUTION_EVIDENCE")
+        assert resolution["status"] == "explicitly_resolved"
+        assert {e["context"] for e in resolution["evidence"]} == {"affirmed", "resolved"}
+        assert {e["note_id"] for e in resolution["evidence"]} == {"RESOLUTION_A", "RESOLUTION_B"}
+
+        silence = next(item for item in flags if item["patient_id"] == "P_SILENCE_EVIDENCE")
+        assert silence["status"] != "explicitly_resolved"
+        assert silence["status"] != "explicitly_negated"
+        assert {e["note_id"] for e in silence["evidence"]} == {"SILENCE_A"}
+    finally:
+        client.post("/api/demo")
+
+
 def test_review_decisions_are_isolated_by_session(client):
     headers_a = {"X-MedThread-Session": "test-review-session-a"}
     headers_b = {"X-MedThread-Session": "test-review-session-b"}
@@ -335,12 +487,27 @@ def test_csv_exports_and_formula_safety(client):
     assert "text/csv" in mentions.headers["content-type"]
     assert "entity_normalized" in mentions.text
 
+    export_session = "test-export-session"
+    review_items = client.get(
+        "/api/review",
+        headers={"X-MedThread-Session": export_session},
+    ).json()
+    if review_items:
+        update = client.put(
+            f"/api/review/{review_items[0]['review_key']}",
+            headers={"X-MedThread-Session": export_session},
+            json={"state": "needs_further_review", "rationale": "Check dated evidence."},
+        )
+        assert update.status_code == 200
     review = client.get(
         "/api/export/review.csv",
-        headers={"X-MedThread-Session": "test-export-session"},
+        headers={"X-MedThread-Session": export_session},
     )
     assert review.status_code == 200
     assert "review_key" in review.text
+    assert "review_rationale" in review.text
+    if review_items:
+        assert "Check dated evidence." in review.text
 
     safe = _csv_response([{"sentence": "  =1+1"}], "test.csv")
     assert "'  =1+1" in safe.body.decode("utf-8")
@@ -369,6 +536,11 @@ def test_evaluation_demo(client):
     assert body["benchmark"]["annotation_status"] == "author_annotated_not_independently_reviewed"
     assert body["entity_metrics"]["precision"] is None
     assert body["entity_metrics"]["f1"] is None
+    assert body["entity_span_metrics"]["available"] is False
+    assert body["entity_span_metrics"]["precision"] is None
+    assert body["entity_span_metrics"]["recall"] is None
+    assert any("exhaustively entity-annotated" in warning
+               for warning in body["entity_span_metrics"]["warnings"])
     assert body["unscorable_predictions"]["classification"].startswith("unscorable")
     assert body["temporal_metrics"]["available"] is False
     assert body["longitudinal_metrics"]["available"] is False
@@ -376,6 +548,9 @@ def test_evaluation_demo(client):
     overall = body["overall"]
     assert 0.0 <= overall.get("accuracy", 0) <= 1.0
     assert 0.0 <= overall.get("macro_f1", 0) <= 1.0
+    unclear = next(row for row in body["per_class"] if row["label"] == "unclear")
+    assert unclear["support"] == 0
+    assert unclear["f1"] == 0.0
 
 
 def test_evaluation_per_class_types(client):
@@ -619,5 +794,95 @@ def test_patient_journey_does_not_infer_chronology_for_undated_notes(client):
             for mention in visit["mentions"]
             if mention["context"] == "affirmed"
         )
+    finally:
+        client.post("/api/demo")
+
+
+def test_unicode_offsets_are_validated_in_original_note_text(client):
+    note = {
+        "patient_id": "P_UNICODE_OFFSET",
+        "note_id": "UNICODE_1",
+        "visit_date": "2026-10-27",
+        "text": "Café 🩺 reports cough.",
+    }
+    try:
+        imported = client.post("/api/notes/import", json={"mode": "replace", "notes": [note]})
+        assert imported.status_code == 200
+        detail = client.get("/api/notes/UNICODE_1").json()
+        mention = next(m for m in detail["mentions"] if m["entity_normalized"] == "cough")
+
+        assert mention["offset_unit"] == "unicode_code_points"
+        assert mention["offset_convention"] == "zero_based_half_open"
+        assert mention["offset_validated"] is True
+        assert detail["text"][mention["char_start"]:mention["char_end"]] == mention["entity"]
+        listed_mention = client.get("/api/mentions?note_id=UNICODE_1").json()[0]
+        assert listed_mention["offset_validated"] is True
+        assert listed_mention["offset_unit"] == "unicode_code_points"
+    finally:
+        client.post("/api/demo")
+
+
+def test_imported_notes_and_review_rationale_survive_app_restart(client, tmp_path):
+    original_store = state.store
+    state.store = SQLiteStore(tmp_path / "restart.sqlite3")
+    headers = {"X-MedThread-Session": "restart-session"}
+    notes = [
+        {
+            "patient_id": "P_RESTART",
+            "note_id": "RESTART_1",
+            "visit_date": "2026-10-01",
+            "text": "Patient has fever.",
+        },
+        {
+            "patient_id": "P_RESTART",
+            "note_id": "RESTART_2",
+            "visit_date": "2026-10-02",
+            "text": "Patient denies fever.",
+        },
+    ]
+    try:
+        with TestClient(app) as first_run:
+            response = first_run.post(
+                "/api/notes/import",
+                json={"mode": "replace", "notes": notes},
+            )
+            assert response.status_code == 200
+            flags = first_run.get("/api/review", headers=headers).json()
+            flag = next(item for item in flags if item["patient_id"] == "P_RESTART")
+            decision = first_run.put(
+                f"/api/review/{flag['review_key']}",
+                headers=headers,
+                json={
+                    "state": "confirmed_inconsistency",
+                    "rationale": "Both source notes document different contexts.",
+                },
+            )
+            assert decision.status_code == 200
+
+        state.reset()
+        with TestClient(app) as restarted:
+            restored_notes = restarted.get("/api/notes").json()
+            assert {note["note_id"] for note in restored_notes} == {"RESTART_1", "RESTART_2"}
+            restored_flags = restarted.get("/api/review", headers=headers).json()
+            restored_flag = next(item for item in restored_flags if item["patient_id"] == "P_RESTART")
+            assert restored_flag["review_state"] == "confirmed_inconsistency"
+            assert restored_flag["review_rationale"] == "Both source notes document different contexts."
+            assert restored_flag["review_updated_at"]
+            assert len(restored_flag["review_history"]) == 1
+            assert restored_flag["review_history"][0]["rationale"] == "Both source notes document different contexts."
+    finally:
+        state.store = original_store
+        client.post("/api/demo")
+
+
+def test_reset_remains_empty_after_app_restart(client):
+    try:
+        reset = client.post("/api/reset")
+        assert reset.status_code == 200
+        assert client.get("/api/notes").json() == []
+
+        with TestClient(app) as restarted:
+            assert restarted.get("/api/notes").json() == []
+            assert restarted.get("/api/state").json()["dataset_source"] == "empty"
     finally:
         client.post("/api/demo")

@@ -30,7 +30,9 @@ from medthread.evaluation import (
     find_errors,
     load_gold_annotations,
     sentence_occurs_in_text,
+    span_inside_source_sentence,
     compute_entity_coverage_metrics,
+    compute_exact_span_metrics,
     summarize_unmatched_predictions,
 )
 from medthread.pipeline import run_pipeline
@@ -145,6 +147,21 @@ def _mentions_for_note(note, mentions_df: pd.DataFrame) -> list[dict[str, Any]]:
             if 0 <= local_start < len(offsets) and 0 < local_end <= len(offsets):
                 mention["char_start"] = sentence_start + offsets[local_start]
                 mention["char_end"] = sentence_start + offsets[local_end - 1] + 1
+        start = mention.get("char_start")
+        end = mention.get("char_end")
+        source_surface = mention.get("entity")
+        mention["offset_unit"] = "unicode_code_points"
+        mention["offset_convention"] = "zero_based_half_open"
+        mention["offset_validated"] = (
+            isinstance(start, int)
+            and isinstance(end, int)
+            and 0 <= start < end <= len(note.text)
+            and isinstance(source_surface, str)
+            and note.text[start:end].casefold() == source_surface.casefold()
+        )
+        if not mention["offset_validated"]:
+            mention["char_start"] = None
+            mention["char_end"] = None
         mention["extraction_method"] = mention.get("extraction_method")
     return result
 
@@ -153,12 +170,20 @@ def _comparison_records(df: pd.DataFrame, session_id: str) -> list[dict[str, Any
     """Add reviewer state and source-linked evidence to comparison results."""
     records = _df_to_records(df)
     review_states = state.get_review_states(session_id)
+    review_details = state.get_review_details(session_id)
     notes_by_id = {note.note_id: note for note in state.notes}
 
     for record in records:
         key = review_state_key(record.get("patient_id", ""), record.get("entity", ""))
         record["review_key"] = key
+        record["flag_id"] = key
         record["review_state"] = review_states.get(key, record.get("review_state", "unreviewed"))
+        decision = review_details.get(key, {})
+        record["review_rationale"] = decision.get("rationale", "")
+        record["review_updated_at"] = decision.get("updated_at")
+        record["review_history"] = state.store.get_review_event_history(
+            session_id, key
+        )
         note_ids = list(dict.fromkeys(
             note_id.strip()
             for note_id in str(record.get("evidence_note_ids") or "").split(";")
@@ -183,8 +208,56 @@ def _comparison_records(df: pd.DataFrame, session_id: str) -> list[dict[str, Any
                     "reason": mention.get("reason"),
                     "time_expression": mention.get("time_expression"),
                     "normalized_event_date": mention.get("normalized_event_date"),
+                    "entity": mention.get("entity"),
+                    "entity_normalized": mention.get("entity_normalized"),
+                    "char_start": mention.get("char_start"),
+                    "char_end": mention.get("char_end"),
+                    "offset_unit": mention.get("offset_unit"),
+                    "offset_convention": mention.get("offset_convention"),
+                    "offset_validated": mention.get("offset_validated", False),
                 })
         record["evidence"] = evidence
+        temporal_comparisons = []
+        comparable_contexts = {"affirmed", "negated", "resolved"}
+        for index, first in enumerate(evidence):
+            for second in evidence[index + 1:]:
+                if (
+                    first["context"] not in comparable_contexts
+                    or second["context"] not in comparable_contexts
+                    or first["context"] == second["context"]
+                ):
+                    continue
+                first_event = first.get("normalized_event_date")
+                second_event = second.get("normalized_event_date")
+                first_date = None
+                second_date = None
+                try:
+                    first_date = date.fromisoformat(first_event) if first_event else None
+                    second_date = date.fromisoformat(second_event) if second_event else None
+                except ValueError:
+                    pass
+                days_between = (
+                    (second_date - first_date).days
+                    if first_date is not None and second_date is not None
+                    else None
+                )
+                temporal_comparisons.append({
+                    "first_note_id": first["note_id"],
+                    "first_context": first["context"],
+                    "first_visit_date": first.get("visit_date"),
+                    "first_event_date": first_event,
+                    "second_note_id": second["note_id"],
+                    "second_context": second["context"],
+                    "second_visit_date": second.get("visit_date"),
+                    "second_event_date": second_event,
+                    "event_date_comparison": (
+                        "same_event_date" if days_between == 0
+                        else "different_event_dates" if days_between is not None
+                        else "event_date_unavailable"
+                    ),
+                    "days_between_event_dates": days_between,
+                })
+        record["temporal_comparisons"] = temporal_comparisons
     return records
 
 
@@ -203,7 +276,7 @@ def _csv_response(
             safe_row = {}
             for key, value in row.items():
                 if isinstance(value, (dict, list)):
-                    value = str(value)
+                    value = json.dumps(value, ensure_ascii=False)
                 text = "" if value is None else str(value)
                 if text.lstrip().startswith(("=", "+", "-", "@")):
                     text = "'" + text
@@ -216,17 +289,26 @@ def _csv_response(
     )
 
 
-def _activate_notes(notes, dataset_source: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+def _activate_notes(
+    notes,
+    dataset_source: str,
+    *,
+    persist: bool = True,
+    clear_reviews: bool = True,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Run NLP before replacing active session data."""
     mentions_df, comparison_df = run_pipeline(notes)
     if not comparison_df.empty and "review_state" not in comparison_df.columns:
         comparison_df["review_state"] = "unreviewed"
+    if persist:
+        state.store.save_dataset(notes, dataset_source)
     state.notes = notes
     state.mentions_df = mentions_df
     state.comparison_df = comparison_df
     state.pipeline_run = True
     state.dataset_source = dataset_source
-    state.clear_review_states()
+    if clear_reviews:
+        state.clear_review_states()
     return mentions_df, comparison_df
 
 
@@ -251,7 +333,17 @@ def _run_demo() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    _run_demo()
+    state.store.initialize()
+    persisted_dataset = state.store.load_dataset()
+    if persisted_dataset is None:
+        _run_demo()
+    else:
+        notes, dataset_source = persisted_dataset
+        if notes:
+            _activate_notes(notes, dataset_source, persist=False, clear_reviews=False)
+        else:
+            state.reset()
+            state.dataset_source = dataset_source
     yield
 
 
@@ -301,6 +393,7 @@ def load_demo():
 
 @app.post("/api/reset")
 def reset_state():
+    state.store.save_dataset([], "empty")
     state.reset()
     return {"message": "State reset"}
 
@@ -327,7 +420,7 @@ def get_stats():
 @app.get("/api/notes", response_model=list[NoteOut])
 def get_notes(patient_id: Optional[str] = Query(None)):
     if not state.pipeline_run:
-        raise HTTPException(404, "Pipeline not run")
+        return []
     notes = state.notes
     if patient_id:
         notes = [n for n in notes if n.patient_id == patient_id]
@@ -500,8 +593,18 @@ def update_review(
 ):
     if body.state not in REVIEW_STATES:
         raise HTTPException(400, f"Invalid state {body.state!r}. Must be one of: {list(REVIEW_STATES)}")
-    state.get_review_states(x_medthread_session)[review_key] = body.state
-    return {"key": review_key, "state": body.state}
+    decision = state.save_review_decision(
+        x_medthread_session,
+        review_key,
+        body.state,
+        body.rationale.strip(),
+    )
+    return {
+        "key": review_key,
+        "state": decision["state"],
+        "rationale": decision["rationale"],
+        "updated_at": decision["updated_at"],
+    }
 
 
 # ── Upload ────────────────────────────────────────────────────────────────────
@@ -634,6 +737,7 @@ def export_mentions():
         fieldnames=[
             "patient_id", "note_id", "visit_date", "sentence_index", "sentence",
             "entity", "entity_normalized", "char_start", "char_end",
+            "offset_unit", "offset_convention", "offset_validated",
             "extraction_method", "context", "reason", "time_expression",
             "normalized_event_date",
         ],
@@ -653,7 +757,8 @@ def export_review(
             fieldnames=[
                 "patient_id", "entity", "status", "explanation", "rule_trace",
                 "evidence_note_ids", "evidence_sentences", "review_state",
-                "review_key", "evidence",
+                "review_key", "review_rationale", "review_updated_at",
+                "review_history", "evidence",
             ],
         )
     review_df = state.comparison_df[
@@ -666,7 +771,8 @@ def export_review(
         fieldnames=[
             "patient_id", "entity", "status", "explanation", "rule_trace",
             "evidence_note_ids", "evidence_sentences", "review_state",
-            "review_key", "evidence",
+            "review_key", "review_rationale", "review_updated_at",
+            "review_history", "evidence",
         ],
     )
 
@@ -685,6 +791,14 @@ def run_evaluation_demo():
         raise HTTPException(500, f"Failed to load benchmark metadata: {exc}") from exc
 
     active_notes = {note.note_id: note for note in state.notes}
+    source_note_texts = {note.note_id: note.text for note in state.notes}
+    predicted_mentions: list[dict[str, Any]] = []
+    for note in state.notes:
+        note_mentions = state.mentions_df[
+            state.mentions_df["note_id"] == note.note_id
+        ] if not state.mentions_df.empty else pd.DataFrame()
+        predicted_mentions.extend(_mentions_for_note(note, note_mentions))
+
     eligible_gold_rows = []
     exclusions: list[dict[str, Any]] = []
     for row_index, row in gold_df.iterrows():
@@ -702,12 +816,53 @@ def run_evaluation_demo():
                 "reason": "gold_sentence_not_found_in_source_note",
             })
         else:
+            has_start = "entity_start" in row and str(row["entity_start"]).strip() != ""
+            has_end = "entity_end" in row and str(row["entity_end"]).strip() != ""
+            if has_start != has_end:
+                exclusions.append({
+                    "note_id": str(row["note_id"]),
+                    "entity_normalized": str(row["entity_normalized"]),
+                    "reason": "incomplete_gold_entity_span_offsets",
+                })
+                continue
+            if has_start:
+                try:
+                    start, end = int(row["entity_start"]), int(row["entity_end"])
+                    if (
+                        str(row["entity_start"]).strip() != str(start)
+                        or str(row["entity_end"]).strip() != str(end)
+                        or not 0 <= start < end <= len(note.text)
+                        or note.text[start:end].casefold()
+                        not in {
+                            alias.casefold()
+                            for alias in SYMPTOM_LEXICON[str(row["entity_normalized"])]
+                        }
+                        or not span_inside_source_sentence(
+                            row["sentence"], note.text, start, end
+                        )
+                    ):
+                        raise ValueError
+                except (TypeError, ValueError, KeyError):
+                    exclusions.append({
+                        "note_id": str(row["note_id"]),
+                        "entity_normalized": str(row["entity_normalized"]),
+                        "reason": "invalid_gold_entity_span_offset",
+                    })
+                    continue
             eligible_gold_rows.append(row_index)
     gold_df = gold_df.loc[eligible_gold_rows].reset_index(drop=True)
+    exhaustive_note_ids = benchmark.get("entity_exhaustive_note_ids", [])
+    entity_span_metrics = compute_exact_span_metrics(
+        gold_df,
+        predicted_mentions,
+        source_note_texts,
+        exhaustive_note_ids if isinstance(exhaustive_note_ids, list) else [],
+    )
     if gold_df.empty:
         return EvaluationResponse(
             benchmark=benchmark,
             entity_metrics=compute_entity_coverage_metrics(pd.DataFrame()),
+            entity_span_metrics=entity_span_metrics,
             overall={},
             per_class=[],
             confusion_matrix=None,
@@ -734,7 +889,7 @@ def run_evaluation_demo():
         )
     aligned = align_predictions_with_gold(
         gold_df,
-        state.mentions_df.to_dict("records") if state.pipeline_run else [],
+        predicted_mentions,
         allow_unique_fallback=False,
     )
     result = compute_context_metrics(aligned)
@@ -752,7 +907,7 @@ def run_evaluation_demo():
     entity_metrics = compute_entity_coverage_metrics(aligned)
     unscorable_predictions = summarize_unmatched_predictions(
         gold_df,
-        state.mentions_df.to_dict("records") if state.pipeline_run else [],
+        predicted_mentions,
         aligned,
     )
     cm = result.get("confusion_matrix")
@@ -768,6 +923,7 @@ def run_evaluation_demo():
     return EvaluationResponse(
         benchmark=benchmark,
         entity_metrics=entity_metrics,
+        entity_span_metrics=entity_span_metrics,
         overall=result.get("overall", {}),
         per_class=per_class,
         confusion_matrix=cm_list,

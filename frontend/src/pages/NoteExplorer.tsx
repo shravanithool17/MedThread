@@ -16,6 +16,7 @@ export default function NoteExplorer() {
     () => new URLSearchParams(window.location.search).get('note_id'),
   )
   const [selectedMention, setSelectedMention] = useState<Mention | null>(null)
+  const [evidenceWarning, setEvidenceWarning] = useState('')
   const [filter, setFilter] = useState('')
   const notes = useQuery({ queryKey: ['notes'], queryFn: () => api.getNotes() })
   const noteDetail = useQuery({
@@ -29,7 +30,36 @@ export default function NoteExplorer() {
       setSelectedNoteId(requestedNote)
     }
   }, [notes.data])
-  useEffect(() => setSelectedMention(null), [selectedNoteId])
+  useEffect(() => {
+    setSelectedMention(null)
+    setEvidenceWarning('')
+  }, [selectedNoteId])
+  useEffect(() => {
+    if (!noteDetail.data) return
+    const params = new URLSearchParams(window.location.search)
+    if (params.get('note_id') !== noteDetail.data.note_id) return
+    const start = Number(params.get('mention_start'))
+    const end = Number(params.get('mention_end'))
+    if (!params.has('mention_start') || !params.has('mention_end')) return
+
+    const mention = noteDetail.data.mentions.find(item =>
+      item.offset_validated
+        && item.char_start === start
+        && item.char_end === end,
+    )
+    if (!mention) {
+      setEvidenceWarning('The linked source span is no longer available or could not be validated.')
+      return
+    }
+    setEvidenceWarning('')
+    setSelectedMention(mention)
+  }, [noteDetail.data])
+  useEffect(() => {
+    if (!selectedMention) return
+    document.querySelector<HTMLElement>(
+      `[data-mention-start="${selectedMention.char_start}"][data-mention-end="${selectedMention.char_end}"]`,
+    )?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  }, [selectedMention])
 
   const allNotes = notes.data ?? []
   const filtered = filter
@@ -49,7 +79,17 @@ export default function NoteExplorer() {
           <h1 className="page-title">Note Explorer</h1>
           <p className="mt-0.5 text-sm text-gray-400">Document view with inline entity highlighting</p>
         </div>
-        <Link to="/import" className="btn-secondary">Import Notes</Link>
+        <div className="flex items-center gap-3">
+          {new URLSearchParams(window.location.search).get('from_timeline') === '1' && (
+            <Link
+              to={`/journey?patient_id=${encodeURIComponent(new URLSearchParams(window.location.search).get('patient_id') ?? '')}&note_id=${encodeURIComponent(new URLSearchParams(window.location.search).get('timeline_note_id') ?? '')}`}
+              className="text-sm font-semibold text-teal-800 underline"
+            >
+              Return to patient journey
+            </Link>
+          )}
+          <Link to="/import" className="btn-secondary">Import Notes</Link>
+        </div>
       </div>
       {notes.isError && <p className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800" role="alert">Could not load notes: {(notes.error as Error).message}</p>}
 
@@ -153,6 +193,7 @@ export default function NoteExplorer() {
                 <p className="mt-2 text-xs text-gray-500">
                   A missing highlighted mention is not evidence that a symptom is absent.
                 </p>
+                {evidenceWarning && <p className="mt-2 text-sm text-amber-800" role="status">{evidenceWarning}</p>}
                 {selectedMention && (
                   <div className="mt-3 rounded-lg border border-teal-100 bg-teal-50/60 p-4" aria-live="polite">
                     <p className="section-label mb-2">Selected entity evidence</p>

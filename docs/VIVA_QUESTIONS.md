@@ -74,3 +74,12 @@
 
 25. **How can the demonstration be reproduced?**  
     Follow setup and run commands in the root README and version/environment notes in `REPRODUCIBILITY.md`.
+
+26. **What persists after restarting the FastAPI backend?**
+    The active source notes, dataset metadata, latest reviewer decisions, optional rationale, timestamps, and review-event history persist in local SQLite. NLP results are recomputed from source notes at startup. Replacing/resetting the dataset clears review decisions.
+
+27. **Does local persistence make MedThread safe for real patient data?**
+    No. SQLite stores note text in plaintext and the prototype has no encryption or clinical security controls. Use only synthetic or otherwise appropriately de-identified data.
+
+28. **How are source mention highlights kept aligned with original text?**
+    The API validates zero-based, half-open Unicode code-point offsets against the original note. React converts them to UTF-16 indices before slicing; invalid offsets are not exposed as valid source links.

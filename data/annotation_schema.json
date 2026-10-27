@@ -26,6 +26,16 @@
       "minLength": 1,
       "description": "Canonical target concept from the configured lexicon."
     },
+    "entity_start": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Optional zero-based inclusive Unicode code-point offset into the original note."
+    },
+    "entity_end": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Optional zero-based exclusive Unicode code-point offset into the original note."
+    },
     "context": {
       "enum": [
         "affirmed",
@@ -41,6 +51,12 @@
     }
   },
   "additionalProperties": false,
+  "span_evaluation_requirements": [
+    "Both entity_start and entity_end must be present and identify the exact source surface for entity_normalized.",
+    "Benchmark metadata must list the note_id values whose complete note text was exhaustively annotated as entity_exhaustive_note_ids.",
+    "The exhaustive scope must include notes with zero target mentions so unmatched predictions within those notes can be counted as false positives.",
+    "Repeated occurrences are separate rows with distinct offsets; duplicate/conflicting spans must be reviewed rather than guessed."
+  ],
   "future_exhaustive_annotation_fields": {
     "annotation_status": [
       "draft",

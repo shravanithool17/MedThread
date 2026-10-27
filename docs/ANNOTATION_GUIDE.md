@@ -18,6 +18,45 @@ The corresponding machine-readable row schema is [../data/annotation_schema.json
 
 One row means one concept/context judgment tied to one source sentence. A sentence may have multiple rows when multiple target concepts occur or context differs by concept. Note IDs resolve to patient and date through the source note dataset.
 
+At load time, judgments are keyed by note ID, canonical entity, and a
+punctuation/whitespace-normalized sentence. Repeated equivalent rows with the
+same context are deduplicated and surfaced as a warning. If duplicate rows for
+that key disagree on context, every row in that conflicting group is excluded
+and reported; the evaluator does not select a label arbitrarily.
+
+## Exact-span extraction evaluation
+
+`entity_start` and `entity_end` are optional for the existing context-example
+benchmark. When provided, both must be integer, zero-based, half-open Unicode
+code-point offsets into the exact original note text. The substring must match
+an alias of `entity_normalized` and fall within the annotated source sentence.
+Offsets are not UTF-16 indices and must not be measured against normalized or
+preprocessed text.
+
+Exact-span precision, recall, and F1 are reported only when benchmark metadata
+declares the complete set of exhaustively annotated `entity_exhaustive_note_ids`,
+all those source notes are available, and every gold entity occurrence in that
+scope has a valid canonical label and exact span. The declared scope must
+include notes (or complete note text) with no target concepts, so predictions
+inside the scope can validly count as false positives. Occurrences repeated in
+one note are separate gold rows with distinct offsets. Same-span duplicate rows
+are deduplicated with a warning; conflicting canonical concepts at one span
+invalidate exact-span scoring. Missing offsets, invalid offsets, incomplete
+scope, or unavailable notes make these metrics unavailable; do not infer spans
+from system predictions.
+
+The current benchmark declares an empty exhaustive scope and has no entity
+offset columns. Therefore extraction precision, recall, and F1 are unavailable
+for it. Its partial context rows support only the separately reported
+source-aligned context/example analysis. Predictions not matched to those
+partial rows remain unscorable, not false positives.
+
+The CSV has 60 raw rows; evaluation skips one because `NOTE_013` labels
+`cough` in “Patient denies all symptoms.” without a cough surface form in the
+sentence. This is an annotation/evidence-alignment gap, not a prediction to
+repair automatically. The gold row is unchanged; evaluation warns and scores
+the other 59 eligible examples.
+
 ## Context definitions
 
 | Label | Use when | Example |
@@ -59,6 +98,14 @@ The current benchmark does not include gold temporal labels or longitudinal case
 ## Future exhaustive benchmark format
 
 Before measuring entity false positives, annotate all target entity spans (including negative sentences and sentences with no targets) in a declared note/case scope. Add inclusive/exclusive offsets (`entity_start`, `entity_end`), exhaustive-coverage declaration, annotation status, rationale, and patient/case group IDs. Independently review and adjudicate labels. Split cases by patient/group before any learned model is trained or any holdout score is reported. The current demo annotations must not be silently relabeled or treated as exhaustive.
+
+For temporal/longitudinal evaluation, add independently reviewed gold labels
+for event-time interpretation and pair/case outcomes, including explicit
+resolution, temporal change, missing documentation, potential contradiction,
+uncertainty, and not-comparable cases. Retain the source note IDs, exact
+evidence sentences/spans, reference date, normalized event date (or an explicit
+unknown/ambiguous value), and annotation rationale. Visit dates are metadata
+and cannot substitute for an event date.
 
 ## Provenance and limitations
 

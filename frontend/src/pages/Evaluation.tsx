@@ -160,17 +160,37 @@ export default function Evaluation() {
           )}
 
           <section className="card">
-            <p className="section-label mb-3">Entity Extraction Coverage</p>
+            <p className="section-label mb-3">Annotated Mention Coverage (Context Examples)</p>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               <MetricTile value={d.entity_metrics.recall} label="Recall on annotated examples" color="#047857" />
-              <MetricTile value={d.entity_metrics.precision} label="Precision" color="#1d4ed8" />
-              <MetricTile value={d.entity_metrics.f1} label="F1" color="#b45309" />
+              <MetricTile value={d.entity_metrics.precision} label="Precision (not measurable)" color="#1d4ed8" />
+              <MetricTile value={d.entity_metrics.f1} label="F1 (not measurable)" color="#b45309" />
             </div>
             <p className="mt-3 text-xs text-gray-600">
               {d.entity_metrics.n_matched_examples} matched of {d.entity_metrics.n_annotated_examples - d.entity_metrics.n_unscorable_examples} eligible annotated examples;
               {' '}{d.entity_metrics.n_missed_extractions} missed extractions and {d.entity_metrics.n_unscorable_examples} unscorable alignments.
             </p>
             <p className="mt-1 text-xs text-gray-500">{d.entity_metrics.matching_method}. {d.entity_metrics.limitation}</p>
+          </section>
+
+          <section className="card">
+            <p className="section-label mb-3">Exact-Span Extraction Metrics</p>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <MetricTile value={d.entity_span_metrics.recall} label="Exact-span recall" color="#047857" />
+              <MetricTile value={d.entity_span_metrics.precision} label="Exact-span precision" color="#1d4ed8" />
+              <MetricTile value={d.entity_span_metrics.f1} label="Exact-span F1" color="#b45309" />
+            </div>
+            <p className="mt-3 text-xs text-gray-600">
+              {d.entity_span_metrics.available
+                ? `${d.entity_span_metrics.true_positives} exact matches · ${d.entity_span_metrics.false_positives} false positives · ${d.entity_span_metrics.false_negatives} false negatives across ${d.entity_span_metrics.scope_note_count} exhaustively annotated notes.`
+                : 'Not computed: the active benchmark does not provide a validated exhaustive span-annotation scope.'}
+            </p>
+            {d.entity_span_metrics.matching_method && (
+              <p className="mt-1 text-xs text-gray-500">{d.entity_span_metrics.matching_method}</p>
+            )}
+            {d.entity_span_metrics.warnings.map((warning, index) => (
+              <p key={index} className="mt-1 text-xs text-amber-800">{warning}</p>
+            ))}
           </section>
 
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">

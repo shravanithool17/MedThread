@@ -13,10 +13,52 @@ interface Segment {
   mention?: Mention
 }
 
+function buildCodePointToUtf16Map(
+  text: string,
+  mentions: Mention[],
+): { offsets: Map<number, number>; codePointLength: number } {
+  const targets = new Set<number>()
+  for (const mention of mentions) {
+    if (Number.isInteger(mention.char_start) && mention.char_start !== null && mention.char_start >= 0) {
+      targets.add(mention.char_start)
+    }
+    if (Number.isInteger(mention.char_end) && mention.char_end !== null && mention.char_end >= 0) {
+      targets.add(mention.char_end)
+    }
+  }
+  const offsets = new Map<number, number>()
+  let utf16Offset = 0
+  let codePointOffset = 0
+  for (const character of text) {
+    if (targets.has(codePointOffset)) offsets.set(codePointOffset, utf16Offset)
+    utf16Offset += character.length
+    codePointOffset += 1
+  }
+  if (targets.has(codePointOffset)) offsets.set(codePointOffset, utf16Offset)
+  return { offsets, codePointLength: codePointOffset }
+}
+
 function buildSegments(text: string, mentions: Mention[]): Segment[] {
   if (!mentions.length) return [{ text }]
 
-  const positioned = mentions.filter(m => m.char_start !== null && m.char_end !== null)
+  const candidates = mentions.filter(m =>
+    m.offset_validated !== false
+      && Number.isInteger(m.char_start)
+      && Number.isInteger(m.char_end)
+      && m.char_start !== null
+      && m.char_end !== null
+      && m.char_start >= 0
+      && m.char_start < m.char_end,
+  )
+  const { offsets: codePointOffsets, codePointLength } = buildCodePointToUtf16Map(text, candidates)
+  const positioned = candidates.filter(m => {
+    if (m.char_end === null || m.char_start === null || m.char_end > codePointLength) return false
+    const start = codePointOffsets.get(m.char_start)
+    const end = codePointOffsets.get(m.char_end)
+    if (start === undefined || end === undefined) return false
+    return text.slice(start, end).toLowerCase()
+      === (m.entity ?? m.entity_normalized).toLowerCase()
+  })
   if (!positioned.length) {
     const result: Segment[] = []
     const terms = [...new Map(
@@ -46,8 +88,8 @@ function buildSegments(text: string, mentions: Mention[]): Segment[] {
   const segments: Segment[] = []
   let cursor = 0
   for (const m of sorted) {
-    const start = m.char_start ?? 0
-    const end = m.char_end ?? start
+    const start = codePointOffsets.get(m.char_start ?? 0) ?? cursor
+    const end = codePointOffsets.get(m.char_end ?? 0) ?? start
     if (start < cursor) continue
     if (start > cursor) segments.push({ text: text.slice(cursor, start) })
     segments.push({ text: text.slice(start, end), mention: m })
@@ -82,6 +124,8 @@ export default function HighlightedText({
             key={i}
             title={`${seg.mention.entity_normalized} — ${seg.mention.context}. ${seg.mention.reason ?? ''}`}
             aria-label={`Inspect ${seg.mention.entity_normalized}, ${seg.mention.context}`}
+            data-mention-start={seg.mention.char_start ?? undefined}
+            data-mention-end={seg.mention.char_end ?? undefined}
             aria-pressed={selectedMention === seg.mention}
             onClick={() => onMentionClick?.(seg.mention!)}
             onKeyDown={event => {

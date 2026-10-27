@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import io
 import re
+from collections import Counter
 
 import pandas as pd
 
+from .config import SYMPTOM_LEXICON
 
 GOLD_REQUIRED_COLUMNS = {"note_id", "sentence", "entity_normalized", "context"}
 CONTEXT_LABEL_ORDER = ("affirmed", "negated", "uncertain", "resolved", "unclear")
@@ -29,6 +31,27 @@ def sentence_occurs_in_text(sentence: object, text: object) -> bool:
         text_tokens[index:index + width] == sentence_tokens
         for index in range(len(text_tokens) - width + 1)
     )
+
+
+def span_inside_source_sentence(sentence: object, text: object, start: int, end: int) -> bool:
+    """Return whether an original-text character span falls within an aligned sentence."""
+    sentence_tokens = [
+        match.group().casefold()
+        for match in re.finditer(r"\w+", str(sentence), flags=re.UNICODE)
+    ]
+    source_tokens = list(re.finditer(r"\w+", str(text), flags=re.UNICODE))
+    if not sentence_tokens or not 0 <= start < end <= len(str(text)):
+        return False
+    source_words = [match.group().casefold() for match in source_tokens]
+    width = len(sentence_tokens)
+    for index in range(len(source_words) - width + 1):
+        if source_words[index:index + width] != sentence_tokens:
+            continue
+        sentence_start = source_tokens[index].start()
+        sentence_end = source_tokens[index + width - 1].end()
+        if sentence_start <= start and end <= sentence_end:
+            return True
+    return False
 
 
 def load_gold_annotations(path_or_bytes) -> tuple[pd.DataFrame, list[str]]:
@@ -70,8 +93,80 @@ def load_gold_annotations(path_or_bytes) -> tuple[pd.DataFrame, list[str]]:
             f"Found: {sorted(df.loc[invalid_context_rows, 'context'].unique())}."
         )
 
-    valid_rows = ~missing_value_rows & ~invalid_context_rows
-    return df.loc[valid_rows].reset_index(drop=True), errors
+    invalid_entity_rows = (
+        ~df["entity_normalized"].isin(SYMPTOM_LEXICON)
+        & ~missing_value_rows
+    )
+    if invalid_entity_rows.any():
+        errors.append(
+            f"{int(invalid_entity_rows.sum())} gold rows use unknown canonical concepts "
+            f"and were skipped. Valid: {sorted(SYMPTOM_LEXICON)}."
+        )
+
+    entity_not_in_sentence = pd.Series(False, index=df.index, dtype=bool)
+    for row_index, row in df.loc[
+        ~missing_value_rows & ~invalid_entity_rows
+    ].iterrows():
+        aliases = SYMPTOM_LEXICON[row["entity_normalized"]]
+        entity_not_in_sentence.loc[row_index] = not any(
+            re.search(
+                rf"(?<!\w){re.escape(alias)}(?!\w)",
+                row["sentence"],
+                flags=re.IGNORECASE,
+            )
+            for alias in aliases
+        )
+    if entity_not_in_sentence.any():
+        errors.append(
+            f"{int(entity_not_in_sentence.sum())} gold rows do not contain a source "
+            "surface form for the canonical concept and were skipped."
+        )
+
+    valid_df = df.loc[
+        ~missing_value_rows
+        & ~invalid_context_rows
+        & ~invalid_entity_rows
+        & ~entity_not_in_sentence
+    ].copy()
+    if valid_df.empty:
+        return valid_df.reset_index(drop=True), errors
+
+    valid_df["_sentence_key"] = valid_df["sentence"].map(
+        lambda value: " ".join(
+            re.findall(r"\w+", value.casefold(), flags=re.UNICODE)
+        )
+    )
+    judgment_keys = ["note_id", "entity_normalized", "_sentence_key"]
+    if {"entity_start", "entity_end"} <= set(valid_df.columns):
+        judgment_keys.extend(["entity_start", "entity_end"])
+    duplicate_groups = valid_df.groupby(judgment_keys, sort=False, dropna=False)
+    duplicate_group_keys = [
+        key for key, group in duplicate_groups
+        if len(group) > 1
+    ]
+    if duplicate_group_keys:
+        conflicting_keys = {
+            key for key, group in duplicate_groups
+            if len(group["context"].unique()) > 1
+        }
+        conflicting_mask = valid_df.set_index(judgment_keys).index.isin(conflicting_keys)
+        if conflicting_mask.any():
+            errors.append(
+                f"{int(conflicting_mask.sum())} gold rows in conflicting duplicate "
+                "judgments were skipped."
+            )
+        valid_df = valid_df.loc[~conflicting_mask].copy()
+
+        same_label_duplicates = valid_df.duplicated(judgment_keys, keep="first")
+        if same_label_duplicates.any():
+            errors.append(
+                f"{int(same_label_duplicates.sum())} repeated gold rows with the same "
+                "label were deduplicated."
+            )
+            valid_df = valid_df.loc[~same_label_duplicates].copy()
+
+    valid_df = valid_df.drop(columns=["_sentence_key"])
+    return valid_df.reset_index(drop=True), errors
 
 
 def align_predictions_with_gold(
@@ -118,7 +213,25 @@ def align_predictions_with_gold(
             if candidate[0] not in used_predictions
         ]
 
-        if not candidates:
+        has_gold_span = (
+            "entity_start" in gold_row
+            and "entity_end" in gold_row
+            and str(gold_row["entity_start"]).strip() != ""
+            and str(gold_row["entity_end"]).strip() != ""
+        )
+        if has_gold_span:
+            try:
+                gold_start = int(gold_row["entity_start"])
+                gold_end = int(gold_row["entity_end"])
+            except (TypeError, ValueError):
+                gold_start = gold_end = -1
+            candidates = [
+                candidate for candidate in candidates
+                if candidate[1].get("char_start") == gold_start
+                and candidate[1].get("char_end") == gold_end
+            ]
+
+        if not candidates and not has_gold_span:
             unmatched_candidates = [
                 candidate for candidate in pred_lookup.get(key, [])
                 if candidate[0] not in used_predictions
@@ -128,7 +241,7 @@ def align_predictions_with_gold(
             if allow_unique_fallback and len(unmatched_candidates) == 1:
                 candidates = unmatched_candidates
 
-        if candidates:
+        if len(candidates) == 1:
             prediction_index, prediction = candidates[0]
             used_predictions.add(prediction_index)
             pred_ctx = str(prediction.get("context", "unclear"))
@@ -145,7 +258,11 @@ def align_predictions_with_gold(
             sentence = str(gold_row["sentence"])
             has_same_note_entity = bool(pred_lookup.get(key))
             alignment_status = (
-                "unscorable_sentence_mismatch" if has_same_note_entity else "missed_extraction"
+                "unscorable_ambiguous_prediction"
+                if len(candidates) > 1
+                else "unscorable_sentence_mismatch"
+                if has_same_note_entity
+                else "missed_extraction"
             )
             match_method = None
             prediction_index = None
@@ -312,7 +429,7 @@ def compute_entity_coverage_metrics(aligned_df: pd.DataFrame) -> dict:
     eligible = aligned_df[status.isin({"matched", "missed_extraction"})]
     matched_count = int((eligible["alignment_status"] == "matched").sum()) if "alignment_status" in eligible else int((eligible["pred_context"] != "not_predicted").sum())
     missed_count = int((eligible["alignment_status"] == "missed_extraction").sum()) if "alignment_status" in eligible else int((eligible["pred_context"] == "not_predicted").sum())
-    unscorable_count = int((status == "unscorable_sentence_mismatch").sum())
+    unscorable_count = int(status.astype(str).str.startswith("unscorable_").sum())
     denominator = matched_count + missed_count
     return {
         "precision": None,
@@ -327,6 +444,157 @@ def compute_entity_coverage_metrics(aligned_df: pd.DataFrame) -> dict:
             "Precision and F1 are unavailable because the annotation set is not exhaustive "
             "and does not annotate all predicted spans. Recall covers only eligible annotated examples."
         ),
+    }
+
+
+def compute_exact_span_metrics(
+    gold_annotations: pd.DataFrame,
+    predicted_mentions: list[dict],
+    source_notes: dict[str, str],
+    exhaustive_note_ids: list[str],
+) -> dict:
+    """Score exact entity spans only inside an explicitly exhaustive note scope."""
+    unavailable = {
+        "available": False,
+        "precision": None,
+        "recall": None,
+        "f1": None,
+        "true_positives": 0,
+        "false_positives": 0,
+        "false_negatives": 0,
+        "n_gold_spans": 0,
+        "n_predicted_spans": 0,
+        "scope_note_count": len(exhaustive_note_ids),
+        "invalid_gold_spans": [],
+        "warnings": [],
+    }
+    if not exhaustive_note_ids:
+        unavailable["warnings"] = [
+            "No note IDs are declared as exhaustively entity-annotated."
+        ]
+        return unavailable
+    missing_notes = sorted(set(exhaustive_note_ids) - set(source_notes))
+    if missing_notes:
+        unavailable["warnings"] = [
+            f"Exhaustive scope notes are missing from the active dataset: {missing_notes}."
+        ]
+        return unavailable
+    required = {"note_id", "entity_normalized", "entity_start", "entity_end"}
+    if not required.issubset(gold_annotations.columns):
+        unavailable["warnings"] = [
+            "Gold annotations do not contain exact entity_start/entity_end offsets."
+        ]
+        return unavailable
+
+    scope = set(exhaustive_note_ids)
+    gold_counts: Counter[tuple[str, int, int, str]] = Counter()
+    invalid_rows: list[dict[str, Any]] = []
+    seen_span_entities: dict[tuple[str, int, int], str] = {}
+    warnings: list[str] = []
+    for row_index, row in gold_annotations.iterrows():
+        note_id = str(row.get("note_id", ""))
+        if note_id not in scope:
+            continue
+        canonical = str(row.get("entity_normalized", ""))
+        text = source_notes[note_id]
+        try:
+            start_value, end_value = row["entity_start"], row["entity_end"]
+            if isinstance(start_value, bool) or isinstance(end_value, bool):
+                raise ValueError
+            start, end = int(start_value), int(end_value)
+            if str(start_value).strip() != str(start) or str(end_value).strip() != str(end):
+                raise ValueError
+        except (TypeError, ValueError):
+            invalid_rows.append({"row": int(row_index) + 1, "reason": "invalid_integer_offsets"})
+            continue
+
+        if canonical not in SYMPTOM_LEXICON:
+            invalid_rows.append({"row": int(row_index) + 1, "reason": "unknown_canonical_concept"})
+            continue
+        if not 0 <= start < end <= len(text):
+            invalid_rows.append({"row": int(row_index) + 1, "reason": "span_out_of_bounds"})
+            continue
+        surface = text[start:end]
+        if surface.casefold() not in {
+            alias.casefold() for alias in SYMPTOM_LEXICON[canonical]
+        }:
+            invalid_rows.append({"row": int(row_index) + 1, "reason": "span_surface_concept_mismatch"})
+            continue
+        sentence = row.get("sentence")
+        if sentence and not span_inside_source_sentence(sentence, text, start, end):
+            invalid_rows.append({"row": int(row_index) + 1, "reason": "span_outside_annotated_sentence"})
+            continue
+
+        span_key = (note_id, start, end)
+        prior_entity = seen_span_entities.get(span_key)
+        if prior_entity is not None and prior_entity != canonical:
+            invalid_rows.append({"row": int(row_index) + 1, "reason": "conflicting_duplicate_span"})
+            continue
+        if prior_entity == canonical:
+            warnings.append(f"Duplicate gold span on note {note_id} at [{start}, {end}) was deduplicated.")
+            continue
+        seen_span_entities[span_key] = canonical
+        gold_counts[(note_id, start, end, canonical)] += 1
+
+    if invalid_rows:
+        unavailable["invalid_gold_spans"] = invalid_rows
+        unavailable["warnings"] = [
+            "Exact-span metrics are unavailable because one or more gold spans failed validation."
+        ]
+        return unavailable
+
+    predicted_counts: Counter[tuple[str, int, int, str]] = Counter()
+    invalid_prediction_count = 0
+    for mention in predicted_mentions:
+        note_id = str(mention.get("note_id", ""))
+        if note_id not in scope:
+            continue
+        start, end = mention.get("char_start"), mention.get("char_end")
+        canonical = str(mention.get("entity_normalized", ""))
+        text = source_notes[note_id]
+        if (
+            not isinstance(start, int)
+            or isinstance(start, bool)
+            or not isinstance(end, int)
+            or isinstance(end, bool)
+            or not 0 <= start < end <= len(text)
+            or canonical not in SYMPTOM_LEXICON
+        ):
+            invalid_prediction_count += 1
+            continue
+        predicted_counts[(note_id, start, end, canonical)] += 1
+
+    true_positives = sum(
+        min(count, gold_counts.get(key, 0))
+        for key, count in predicted_counts.items()
+    )
+    false_positives = (
+        sum(predicted_counts.values())
+        - true_positives
+        + invalid_prediction_count
+    )
+    false_negatives = sum(gold_counts.values()) - true_positives
+    n_gold = sum(gold_counts.values())
+    n_predicted = sum(predicted_counts.values()) + invalid_prediction_count
+    precision = true_positives / n_predicted if n_predicted else None
+    recall = true_positives / n_gold if n_gold else None
+    f1_denominator = 2 * true_positives + false_positives + false_negatives
+    f1 = 2 * true_positives / f1_denominator if f1_denominator else None
+    return {
+        "available": True,
+        "precision": round(precision, 3) if precision is not None else None,
+        "recall": round(recall, 3) if recall is not None else None,
+        "f1": round(f1, 3) if f1 is not None else None,
+        "true_positives": true_positives,
+        "false_positives": false_positives,
+        "false_negatives": false_negatives,
+        "n_gold_spans": n_gold,
+        "n_predicted_spans": n_predicted,
+        "scope_note_count": len(exhaustive_note_ids),
+        "invalid_gold_spans": [],
+        "warnings": warnings,
+        "matching_method": "exact note ID + zero-based half-open code-point span + canonical concept",
+        "coverage": "Only predictions within declared exhaustively annotated notes are scored.",
     }
 
 
@@ -345,8 +613,17 @@ def summarize_unmatched_predictions(
         (str(row["note_id"]), str(row["entity_normalized"]))
         for _, row in gold_df.iterrows()
     }
+    ambiguous_keys = {
+        (str(row["note_id"]), str(row["entity_normalized"]))
+        for _, row in aligned_df.iterrows()
+        if row.get("alignment_status") == "unscorable_ambiguous_prediction"
+    }
     examples = []
-    counts = {"no_gold_for_note_entity": 0, "sentence_alignment_mismatch": 0}
+    counts = {
+        "no_gold_for_note_entity": 0,
+        "sentence_alignment_mismatch": 0,
+        "ambiguous_repeated_mention_alignment": 0,
+    }
     for index, prediction in enumerate(pred_mentions):
         if index in matched_indices:
             continue
@@ -354,11 +631,12 @@ def summarize_unmatched_predictions(
             str(prediction.get("note_id", "")),
             str(prediction.get("entity_normalized", "")),
         )
-        reason = (
-            "sentence_alignment_mismatch"
-            if key in gold_keys
-            else "no_gold_for_note_entity"
-        )
+        if key not in gold_keys:
+            reason = "no_gold_for_note_entity"
+        elif key in ambiguous_keys:
+            reason = "ambiguous_repeated_mention_alignment"
+        else:
+            reason = "sentence_alignment_mismatch"
         counts[reason] += 1
         if len(examples) < limit:
             examples.append({

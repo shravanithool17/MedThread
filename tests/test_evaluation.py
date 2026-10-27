@@ -13,8 +13,11 @@ from medthread.evaluation import (
     align_predictions_with_gold,
     compute_context_metrics,
     compute_entity_coverage_metrics,
+    compute_exact_span_metrics,
     find_errors,
     load_gold_annotations,
+    span_inside_source_sentence,
+    summarize_unmatched_predictions,
 )
 
 
@@ -243,6 +246,154 @@ def test_invalid_gold_rows_are_reported_and_excluded():
     assert gold_df.iloc[0]["note_id"] == "N1"
     assert any("unknown context labels" in error for error in errors)
     assert any("empty required values" in error for error in errors)
+
+
+def test_identical_gold_judgments_are_deduplicated_with_warning():
+    content = (
+        "note_id,sentence,entity_normalized,context\n"
+        "N1,Patient has fever.,fever,affirmed\n"
+        "N1,Patient has fever!,fever,affirmed\n"
+    )
+
+    gold_df, warnings = load_gold_annotations(content.encode())
+
+    assert len(gold_df) == 1
+    assert any("repeated gold rows" in warning for warning in warnings)
+
+
+def test_conflicting_duplicate_gold_judgments_are_excluded_with_warning():
+    content = (
+        "note_id,sentence,entity_normalized,context\n"
+        "N1,Patient has fever.,fever,affirmed\n"
+        "N1,Patient has fever!,fever,negated\n"
+        "N2,Patient has cough.,cough,affirmed\n"
+    )
+
+    gold_df, warnings = load_gold_annotations(content.encode())
+
+    assert len(gold_df) == 1
+    assert gold_df.iloc[0]["note_id"] == "N2"
+    assert any("conflicting duplicate judgments" in warning for warning in warnings)
+
+
+def test_gold_loader_rejects_unknown_canonical_and_surface_mismatch():
+    content = (
+        "note_id,sentence,entity_normalized,context\n"
+        "N1,Patient reports headache.,made_up,affirmed\n"
+        "N2,Patient reports cough.,fever,affirmed\n"
+        "N3,Patient reports fever.,fever,affirmed\n"
+    )
+
+    gold_df, warnings = load_gold_annotations(content.encode())
+
+    assert gold_df["note_id"].tolist() == ["N3"]
+    assert any("unknown canonical concepts" in warning for warning in warnings)
+    assert any("do not contain a source surface form" in warning for warning in warnings)
+
+
+def test_repeated_mentions_without_gold_offsets_are_unscorable_for_context():
+    gold = pd.DataFrame([{
+        "note_id": "N1",
+        "entity_normalized": "cough",
+        "sentence": "Cough and cough continue.",
+        "context": "affirmed",
+    }])
+    predictions = [
+        {"note_id": "N1", "entity_normalized": "cough", "sentence": "Cough and cough continue.", "context": "affirmed"},
+        {"note_id": "N1", "entity_normalized": "cough", "sentence": "Cough and cough continue.", "context": "negated"},
+    ]
+
+    aligned = align_predictions_with_gold(gold, predictions, allow_unique_fallback=False)
+
+    assert aligned.iloc[0]["alignment_status"] == "unscorable_ambiguous_prediction"
+    assert compute_entity_coverage_metrics(aligned)["n_unscorable_examples"] == 1
+    result = summarize_unmatched_predictions(gold, predictions, aligned)
+    assert result["counts_by_reason"]["ambiguous_repeated_mention_alignment"] == 2
+
+
+def test_exact_span_metrics_score_only_declared_exhaustive_notes_and_repeated_spans():
+    text = "Cough then cough; fever absent."
+    first_cough = text.index("Cough")
+    second_cough = text.rindex("cough")
+    fever_start = text.index("fever")
+    other_text = "No cough today."
+    other_cough = other_text.index("cough")
+    gold = pd.DataFrame([
+        {"note_id": "N1", "sentence": "Cough then cough.", "entity_normalized": "cough",
+         "entity_start": first_cough, "entity_end": first_cough + 5},
+        {"note_id": "N1", "sentence": "Cough then cough.", "entity_normalized": "cough",
+         "entity_start": second_cough, "entity_end": second_cough + 5},
+    ])
+    predictions = [
+        {"note_id": "N1", "entity_normalized": "cough", "char_start": first_cough, "char_end": first_cough + 5},
+        {"note_id": "N1", "entity_normalized": "cough", "char_start": second_cough, "char_end": second_cough + 5},
+        {"note_id": "N1", "entity_normalized": "fever", "char_start": fever_start, "char_end": fever_start + 5},
+        {"note_id": "N2", "entity_normalized": "cough", "char_start": other_cough, "char_end": other_cough + 5},
+    ]
+
+    result = compute_exact_span_metrics(
+        gold,
+        predictions,
+        {"N1": text, "N2": other_text},
+        ["N1", "N2"],
+    )
+
+    assert result["available"] is True
+    assert (result["true_positives"], result["false_positives"], result["false_negatives"]) == (2, 2, 0)
+    assert result["precision"] == 0.5
+    assert result["recall"] == 1.0
+    assert result["f1"] == pytest.approx(0.667, abs=0.001)
+
+
+@pytest.mark.parametrize(
+    ("gold", "expected_reason"),
+    [
+        (pd.DataFrame([{"note_id": "N1", "entity_normalized": "cough",
+                        "entity_start": -1, "entity_end": 4}]), "span_out_of_bounds"),
+        (pd.DataFrame([{"note_id": "N1", "entity_normalized": "fever",
+                        "entity_start": 0, "entity_end": 5}]), "span_surface_concept_mismatch"),
+        (pd.DataFrame([{"note_id": "N1", "entity_normalized": "cough",
+                        "entity_start": 0, "entity_end": 5,
+                        "sentence": "Fever is absent."}]), "span_outside_annotated_sentence"),
+    ],
+)
+def test_invalid_exact_gold_spans_make_metrics_unavailable(gold, expected_reason):
+    gold["note_id"] = "N1"
+    result = compute_exact_span_metrics(
+        gold,
+        [],
+        {"N1": "Cough is present."},
+        ["N1"],
+    )
+
+    assert result["available"] is False
+    assert result["precision"] is None
+    assert result["invalid_gold_spans"][0]["reason"] == expected_reason
+
+
+def test_exact_span_metrics_require_exhaustive_coverage_and_valid_sources():
+    missing_coverage = compute_exact_span_metrics(
+        pd.DataFrame(),
+        [],
+        {"N1": "Cough."},
+        [],
+    )
+    missing_source = compute_exact_span_metrics(
+        pd.DataFrame(),
+        [],
+        {},
+        ["N1"],
+    )
+
+    assert missing_coverage["available"] is False
+    assert missing_source["available"] is False
+
+
+def test_span_inside_sentence_uses_original_source_offsets():
+    text = "Other words. The patient reports cough today."
+    start = text.index("cough")
+    assert span_inside_source_sentence("The patient reports cough today.", text, start, start + 5)
+    assert not span_inside_source_sentence("Other words.", text, start, start + 5)
 
 
 def test_error_analysis_distinguishes_context_confusion_and_missed_extraction():

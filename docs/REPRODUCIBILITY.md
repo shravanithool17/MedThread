@@ -42,7 +42,24 @@ npm ci
 npm run dev
 ```
 
-The Vite development server proxies API requests to the local FastAPI server. The backend loads synthetic demo notes at startup.
+The Vite development server proxies API requests to the local FastAPI server. A
+fresh database is seeded with synthetic demo notes at first startup; subsequent
+starts restore the active dataset.
+
+The FastAPI application uses `.medthread\medthread.sqlite3` under the project
+root by default. To use a different local file, set the variable in the same
+PowerShell process before starting Uvicorn:
+
+```powershell
+$env:MEDTHREAD_DB_PATH = "C:\medthread-data\medthread.sqlite3"
+python -m uvicorn backend.main:app --host 127.0.0.1 --port 8001
+```
+
+Only a fresh database is seeded with demo notes. Later starts restore the last
+active notes and recompute NLP output. Stop the backend before copying the
+database for backup. It contains plaintext note text; do not use real patient
+data. The React/FastAPI workflow persists via SQLite; the legacy Streamlit
+application retains separate session-state behavior.
 
 ## Test and evaluation commands
 
@@ -51,6 +68,7 @@ From the root:
 ```powershell
 python -m pytest tests -q
 Set-Location frontend
+npm test
 npm run build
 ```
 
@@ -62,7 +80,22 @@ The application uses a deterministic rule-based pipeline and no pseudo-random sa
 
 ## Data and annotation constraints
 
-The current 60-row annotation CSV is partial, project-authored, and not independently reviewed. It has no entity span offsets, exhaustive negative coverage, or temporal/longitudinal gold labels. Unmatched predictions are reported as unscorable rather than false positives. Entity recall is restricted to eligible annotated examples; extraction precision/F1 and temporal/longitudinal metrics are unavailable.
+The current 60-row annotation CSV is partial, project-authored, and not independently reviewed. One row (`NOTE_013`, `cough`, “Patient denies all symptoms.”) is skipped because the labeled canonical concept has no source surface form in the sentence; do not silently repair it from model output. The file has no entity span offsets, exhaustive negative coverage, or temporal/longitudinal gold labels. `entity_exhaustive_note_ids` is empty. Unmatched predictions are reported as unscorable rather than false positives. Annotated-example recall is distinct from exact-span extraction metrics; exact-span precision/recall/F1 are unavailable until a complete scope, valid source offsets, and exhaustive coverage are independently established. Temporal/longitudinal metrics are unavailable.
+
+The review API stores decisions and history in SQLite under the existing
+browser-session identifier. The frontend keeps that identifier in
+`sessionStorage`; decisions are therefore not shared with a different browser
+session/tab, even though a given identifier's records survive backend restarts.
+Changing or restoring the active dataset clears review annotations. Do not
+interpret a persisted prototype decision as a clinical record update.
+
+Temporal evidence may show the note visit dates as source metadata, but a day
+difference is calculated only from two valid normalized event dates. Missing
+or invalid event dates remain unavailable; visit dates are never substituted.
+
+Equivalent duplicate gold judgments are deduplicated with a warning; conflicting
+labels for the same note/entity/source sentence are excluded with a warning.
+Neither policy changes the annotation file itself.
 
 ## Tested environment record
 
@@ -79,7 +112,14 @@ The current 60-row annotation CSV is partial, project-authored, and not independ
 | React | 18.3.1 |
 | Vite | 5.4.21 |
 | TypeScript | 5.9.3 |
-| Backend tests | `python -m pytest tests -q` — 141 passed on 2026-10-27 |
-| Frontend build | `npm run build` — succeeded on 2026-10-27 |
+| Backend tests | `python -m pytest tests -q` — 161 passed on 2026-10-28 |
+| Frontend unit tests | `npm test` — 4 passed on 2026-10-28 |
+| Frontend build | `npm run build` — succeeded on 2026-10-28 |
+| Diff whitespace check | `git diff --check` — clean on 2026-10-28 (Git emitted only LF-to-CRLF notices) |
 
 These are observed versions for this validation run, not pinned project-wide versions. The manifests specify compatible ranges for Python, and the frontend lockfile fixes the JavaScript dependency graph.
+
+The 2026-10-28 `npm audit --omit=dev` check reported two moderate advisories
+through the existing `react-router` / `react-router-dom` 6.x dependency.
+`npm audit` recommends a breaking React Router 7 upgrade; it was not applied
+as part of this evaluation/explainability change.

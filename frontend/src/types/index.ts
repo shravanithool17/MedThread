@@ -68,6 +68,9 @@ export interface Mention {
   normalized_event_date: string | null;
   char_start: number | null;
   char_end: number | null;
+  offset_unit?: string;
+  offset_convention?: string;
+  offset_validated?: boolean;
   extraction_method?: string | null;
   journey_status?: ComparisonStatus | null;
   sentence_index?: number;
@@ -81,9 +84,17 @@ export interface EvidenceItem {
   reason: string | null;
   time_expression: string | null;
   normalized_event_date: string | null;
+  entity?: string | null;
+  entity_normalized?: string | null;
+  char_start?: number | null;
+  char_end?: number | null;
+  offset_unit?: string | null;
+  offset_convention?: string | null;
+  offset_validated?: boolean;
 }
 
 export interface ComparisonResult {
+  flag_id: string;
   patient_id: string;
   entity: string;
   status: ComparisonStatus;
@@ -93,7 +104,30 @@ export interface ComparisonResult {
   evidence_sentences: string;
   review_state: ReviewState;
   review_key: string;
+  review_rationale: string;
+  review_updated_at: string | null;
+  review_history: ReviewEvent[];
   evidence: EvidenceItem[];
+  temporal_comparisons: TemporalComparison[];
+}
+
+export interface TemporalComparison {
+  first_note_id: string;
+  first_context: ContextType;
+  first_visit_date: string | null;
+  first_event_date: string | null;
+  second_note_id: string;
+  second_context: ContextType;
+  second_visit_date: string | null;
+  second_event_date: string | null;
+  event_date_comparison: 'same_event_date' | 'different_event_dates' | 'event_date_unavailable';
+  days_between_event_dates: number | null;
+}
+
+export interface ReviewEvent {
+  state: ReviewState;
+  rationale: string;
+  created_at: string;
 }
 
 export interface Stats {
@@ -150,6 +184,23 @@ export interface EvaluationResult {
     n_unscorable_examples: number;
     matching_method: string;
     limitation: string;
+  };
+  entity_span_metrics: {
+    available: boolean;
+    precision: number | null;
+    recall: number | null;
+    f1: number | null;
+    true_positives: number;
+    false_positives: number;
+    false_negatives: number;
+    n_gold_spans: number;
+    n_predicted_spans: number;
+    scope_note_count: number;
+    invalid_gold_spans: Array<{ row: number; reason: string }>;
+    warnings: string[];
+    limitation?: string;
+    matching_method?: string;
+    coverage?: string;
   };
   message?: string;
   overall: {

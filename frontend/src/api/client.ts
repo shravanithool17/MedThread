@@ -128,11 +128,11 @@ export const api = {
   getReview: (params?: { patient_id?: string; show_all?: string }) =>
     request<ComparisonResult[]>(`/review${buildQuery(params)}`),
 
-  updateReview: (key: string, state: ReviewState) =>
-    request<{ key: string; state: ReviewState }>(`/review/${encodeURIComponent(key)}`, {
+  updateReview: (key: string, state: ReviewState, rationale = '') =>
+    request<{ key: string; state: ReviewState; rationale: string; updated_at: string }>(`/review/${encodeURIComponent(key)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ state }),
+      body: JSON.stringify({ state, rationale }),
     }),
 
   getEvaluation: () => request<EvaluationResult>('/evaluation/demo'),
